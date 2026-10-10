@@ -432,19 +432,24 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
     const status = rootEl.querySelector('[data-std-dw-status]');
     if (status) {
+      // 状态区只说"能不能用"，不摊实现细节。
       const lines = [];
-      lines.push(`当前卡：${esc(st.card)}`);
-      lines.push(
-        src.manual
-          ? `世界书：<b>手动选择</b>了 ${src.names.length} 本${src.names.length ? `（${esc(src.names.join('、'))}）` : ''}`
-          : `世界书：自动跟随该卡绑定的 ${src.names.length} 本${src.names.length ? `（${esc(src.names.join('、'))}）` : ''}`,
-      );
       lines.push(
         st.profile
-          ? `观众档案：${st.profile.data?.channelName ? `《${esc(st.profile.data.channelName)}》` : '已生成'}（${st.profile.stats.summaryChars} 字）`
-          : '观众档案：<b>还没扫描</b>（先点下面的「扫描世界书」，弹幕才会用上这个世界的词）',
+          ? `观众档案：✅ 已就绪${st.profile.data?.channelName ? `（《${esc(st.profile.data.channelName)}》）` : ''}`
+          : '观众档案：<b>还没扫描</b>',
       );
-      lines.push(`已出弹幕：${st.batches} 批　|　观众名册：${st.viewers.length} 人`);
+      const styleN = (st.profile?.styleSamples || []).length;
+      if (st.profile) {
+        lines.push(styleN ? `语风语料：✅ ${styleN} 条` : '语风语料：— 未产出（可在完整设置里指定语风世界书）');
+      }
+      // 书少时列出名字（方便确认），多了就只给数量
+      const names = src.names || [];
+      const bookLine =
+        names.length <= 3
+          ? `世界书：${names.length ? esc(names.join('、')) : '（未选）'}`
+          : `世界书：${names.length} 本`;
+      lines.push(bookLine);
       if (st.busy) lines.push('<b>⏳ 有任务在进行中…</b>');
       if (st.lastError) lines.push(`<span class="std-dw-err">最近出错：${esc(st.lastError)}</span>`);
       status.innerHTML = lines.join('<br>');

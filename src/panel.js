@@ -183,28 +183,15 @@ function pages(app) {
               .join('')
           : '<div class="std-hint">这本酒馆里一本世界书都没有。插件会走「看正文学」路线：弹幕依然能出，只是没有本土词汇。</div>';
 
-        const stats = prof?.stats;
-        const statLines = stats
-          ? [
-              kv('来源世界书', `${stats.books} 本`),
-              kv('条目总数', `${stats.entriesTotal} 条 / 合计 ${fmt(stats.charsTotal)} 字`),
-              kv('本次实际读取', `${stats.entriesRead} 条 / ${fmt(stats.charsRead)} 字（预算 ${fmt(s.scan.entryCharBudget)} 字）`),
-              kv('档案字数', `${stats.summaryChars} 字（上限 ${fmt(s.scan.summaryCharBudget)} 字）`),
-              kv('扫描时间', prof.generatedAt ? new Date(prof.generatedAt).toLocaleString('zh-CN') : '—'),
-            ].join('')
-          : '<div class="std-hint">还没有档案。勾好要读的世界书，点下面的「扫描世界书」让 AI 读一遍，生成"这批观众是谁、用什么词"。</div>';
-
         const modeBanner = isManual
           ? `<div class="std-mode manual">✍️ 手动选择：扫描只读下面<b>勾选</b>的书（已勾 ${used.size} 本）</div>`
-          : `<div class="std-mode auto">🔄 自动跟随当前卡：正在读「本卡绑定的 + 全局开启的」（${used.size} 本）<br>
+          : `<div class="std-mode auto">🔄 自动跟随当前卡（${esc(src.card || '无卡')}）：正在读「本卡绑定的 + 全局开启的」（${used.size} 本）<br>
              <span class="std-dim">勾选任意一本就会切到手动模式；手动模式下手动勾选不会带到别的卡</span></div>`;
 
         return [
-          '<div class="std-hint">扫描是三步走的，任何规模的世界书都不会一口气全塞给模型：<b>先索引</b>（只读条目名，几乎不花 token）→ <b>再按预算取样正文</b> → <b>最后总结成有字数上限的档案</b>。</div>',
+          '<div class="std-hint">扫描分四步：<b>索引条目名</b> → <b>按预算取样正文</b> → <b>总结成观众档案</b> → <b>产出语风语料</b>。无论世界书多大都不会一口气全塞给模型。</div>',
           '<div class="std-sec">扫描会读哪些世界书</div>',
           modeBanner,
-          kv('当前卡', src.card || '(无卡)'),
-          kv('本次会读', src.names.length ? src.names.join('、') : '（一本都没选）'),
           `<div class="std-books">${rows}</div>`,
           btnRow([
             { label: '选择世界书', act: 'books-pick', primary: true },
@@ -240,14 +227,13 @@ function pages(app) {
           row2('语风读取上限（字）', number('scan.styleBookBudget', s.scan.styleBookBudget, 1000, 200000, 1000), '单独预算，不占上面世界书的额度'),
           row2('产出多少条语料', number('scan.styleSampleCount', s.scan.styleSampleCount, 4, 80, 1), '语料会直接进提示词，太多会挤占篇幅'),
           (() => {
+            // 只留一句"有没有就绪"，不把实现细节（新写几条、语料内容）摊在界面上
             const prof = st.profile;
             if (!prof?.styleBookName) return '';
             const n = (prof.styleSamples || []).length;
-            const gen = prof.stats?.styleGenerated || 0;
-            const list = (prof.styleSamples || []).slice(0, 8).map((x) => esc(x));
-            return `<div class="std-hint">上次扫描：语风世界书《${esc(prof.styleBookName)}》→ 产出 ${n} 条语料${
-              n ? `（AI 新写 ${gen} 条，取自原文 ${n - gen} 条）` : ''
-            }${list.length ? `<br>例如：${list.join(' / ')}` : ''}</div>`;
+            return n
+              ? `<div class="std-hint">✅ 语料已就绪（${n} 条，来自《${esc(prof.styleBookName)}》）</div>`
+              : `<div class="std-hint">⚠️ 上次没产出语料，可以再扫一次</div>`;
           })(),
           sep(),
           '<div class="std-sec">预算</div>',
@@ -262,7 +248,6 @@ function pages(app) {
             ? `<div class="std-applied ok"><b>✅ ${esc(app.describeProfileStatus().title)}</b><br>${esc(app.describeProfileStatus().detail)}</div>`
             : `<div class="std-applied none"><b>○ ${esc(app.describeProfileStatus().title)}</b><br>${esc(app.describeProfileStatus().detail)}</div>`,
           scanProgressHtml(ctx && ctx.scanPhase),
-          statLines,
           btnRow([
             { label: ctx && ctx.scanPhase ? '扫描中…' : '扫描世界书', act: 'scan', primary: true },
             { label: '清空档案缓存', act: 'clear-profiles' },
@@ -344,7 +329,10 @@ function pages(app) {
             '悬浮层是盖在正文上的，所以这些预设都带透明度；它会和上面的"整层不透明度"叠乘',
           ),
           row2('背景（自由填写）', text('appearance.overlayBg', a.overlayBg, 'CSS 颜色或渐变，如 rgba(0,0,0,.4)')),
-          row2('播完自动淡出', toggle('appearance.overlayFade', a.overlayFade, '每批播完后整层淡下去，不挡着看正文')),
+          row2(
+            '播完自动淡出',
+            toggle('appearance.overlayFade', a.overlayFade, '默认关：播完只清空弹幕，层保持可见。开着的话整层会淡到几乎看不见（容易以为"消失了"）'),
+          ),
           btnRow([
             { label: '预览速度（用示例弹幕）', act: 'demo', primary: true },
             { label: '按当前主题取个色', act: 'sample-frame-bg' },

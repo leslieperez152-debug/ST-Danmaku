@@ -190,7 +190,15 @@ export function playOverlay(doc, items, opts = {}) {
 
   const totalMs = (items.length * stagger + duration) * 1000 + 300;
   const timer = setTimeout(() => {
-    if (app.overlayFade !== false) root.classList.add('faded');
+    if (app.overlayFade === true) {
+      // 用户明确要求"播完淡出"：整层淡下去（层还在，鼠标移进去仍能拖动）
+      root.classList.add('faded');
+    } else {
+      // 默认：**层保持可见**，只是把飞完的弹幕清掉。
+      // 这样不会出现"整层淡到看不见＝像是消失了"，也不会让弹幕停在最后一帧堆在幕布上。
+      stage.innerHTML = '';
+      if (countEl) countEl.textContent = '';
+    }
     if (typeof opts.onDone === 'function') opts.onDone();
   }, totalMs);
   root.__std.timers.push(timer);

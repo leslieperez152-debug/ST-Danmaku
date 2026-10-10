@@ -717,17 +717,26 @@ await test('轮数设为 0 时不带任何正文', () => {
   eq(danmaku.buildStoryContext([{ id: 1, text: 'x', isUser: false }], { rounds: 0, charBudget: 1000 }), '');
 });
 
-await test('梗记忆只挑短而带情绪的那几条', () => {
+await test('梗记忆挑的是"带具体指代"的，不是空洞套话', () => {
   const gags = danmaku.pickGags(
     [
-      { 内容: '这句话非常完整，有主语有谓语有宾语，还带标点符号。', 类型: '普通' },
-      { 内容: '就这？', 类型: '玩梗' },
-      { 内容: '退钱', 类型: '情绪' },
+      { 内容: '这波稳了', 类型: '情绪' }, // 空洞套话：必须排除
+      { 内容: '666', 类型: '情绪' }, // 空洞套话：必须排除
+      { 内容: '这句话非常完整，有主语有谓语有宾语，还带标点符号。', 类型: '普通' }, // 太长：必须排除
+      { 内容: '他左手那个「缠丝手」用得不对', 类型: '懂行' }, // 带具体指代：应当入选
+      { 内容: '第三式怎么慢下来了', 类型: '抬杠' }, // 带数字与招式：应当入选
     ],
-    2,
+    3,
   );
-  ok(gags.includes('就这？'), gags.join('|'));
-  ok(!gags.some((g) => g.includes('非常完整')), '长句不该被当成梗');
+  ok(gags.includes('他左手那个「缠丝手」用得不对'), `应当选中带具体指代的那条：${gags.join('|')}`);
+  ok(gags.includes('第三式怎么慢下来了'), `应当选中带数字与招式的那条：${gags.join('|')}`);
+  ok(!gags.some((g) => /稳了|666/.test(g)), `不该把空洞套话当梗：${gags.join('|')}`);
+  ok(!gags.some((g) => g.includes('非常完整')), `不该把长句当梗：${gags.join('|')}`);
+});
+
+await test('全是套话时，宁可一个梗都不挑', () => {
+  const gags = danmaku.pickGags([{ 内容: '这波稳了' }, { 内容: '前排' }, { 内容: '666' }], 3);
+  eq(gags.length, 0, `套话不该被当成梗：${gags.join('|')}`);
 });
 
 /* ───────────── 11. 渲染 ───────────── */
@@ -1261,15 +1270,14 @@ await test('设置栏反映当前设置，并且是双向的', () => {
   app.destroy();
 });
 
-await test('状态区显示卡名 / 世界书 / 档案状态', () => {
+await test('状态区显示世界书与档案状态', () => {
   const { d, app } = makeDrawerEnv();
   const drawer = drawerMod.createDrawer(app, { doc: d });
   const el = drawer.mount();
   drawer.render();
   const status = el.querySelector('[data-std-dw-status]').innerHTML;
-  ok(status.includes('当前卡'), status);
   ok(status.includes('世界书'), status);
-  ok(status.includes('还没扫描'), `未扫描时应当提示去扫描：${status}`);
+  ok(status.includes('还没扫描'), `未扫描时应当提示还没有档案：${status}`);
   app.destroy();
 });
 
@@ -1558,7 +1566,7 @@ await test('世界书页会标出哪几本是当前卡绑定的', () => {
   app.destroy();
 });
 
-await test('设置栏的状态区会说清是手动选的还是自动跟随', () => {
+await test('设置栏状态区只说"能不能用"，不摊实现细节', () => {
   const { d, app } = makeDrawerEnv();
   const drawer = drawerMod.createDrawer(app, { doc: d });
   const el = drawer.mount();
@@ -1566,13 +1574,24 @@ await test('设置栏的状态区会说清是手动选的还是自动跟随', ()
   app.updateSettings({ scan: { sources: ['大书', '小书'] } });
   drawer.render();
   let status = el.querySelector('[data-std-dw-status]').innerHTML;
-  ok(/手动选择/.test(status), `手动模式应当写明：${status}`);
-  ok(/大书/.test(status) && /小书/.test(status), '应当列出选中的书');
+  ok(/观众档案/.test(status), `应当有档案状态：${status}`);
+  ok(/大书/.test(status) && /小书/.test(status), '书少时应当列出名字（方便确认）');
+
+  // 不应当出现实现细节
+  ok(!/AI 新写|取自原文|例如：|上次扫描/.test(status), `不该摊实现细节：${status}`);
+
+  // 书多时只给数量
+  app.updateSettings({ scan: { sources: ['大书', '小书', '空书', '第四本'] } });
+  drawer.render();
+  status = el.querySelector('[data-std-dw-status]').innerHTML;
+  ok(/世界书：\d+ 本|世界书：.*大书/.test(status), `书多时应当收敛成数量：${status}`);
 
   app.updateSettings({ scan: { sources: null } });
   drawer.render();
   status = el.querySelector('[data-std-dw-status]').innerHTML;
-  ok(/自动跟随/.test(status), `自动模式应当写明：${status}`);
+  // 自动模式下本卡没绑书，所以是"（未选）"；关键是不该报错、也不该摊细节
+  ok(/世界书：/.test(status), `自动模式也应当有一行世界书状态：${status}`);
+  ok(!/AI 新写|取自原文|例如：/.test(status), `不该摊实现细节：${status}`);
   app.destroy();
 });
 

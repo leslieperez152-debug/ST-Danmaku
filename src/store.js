@@ -119,7 +119,7 @@ export function defaultSettings() {
       overlayBgTouched: false, // 用户是否手动改过悬浮层背景
       overlayRect: { x: 0.06, y: 0.08, w: 0.88, h: 0.18 }, // 相对视口，拖动/缩放后记忆
       overlayOpacity: 0.35, // 悬浮层整体不透明度（整层一起变，含标题栏与弹幕）
-      overlayFade: true, // 每批播完自动淡出
+      overlayFade: false, // 每批播完**不**自动淡出（默认关：淡出后整层几乎看不见，像"消失"了）
     },
 
     /* 调试 */
@@ -261,7 +261,7 @@ export function normalizeSettings(s) {
   out.appearance.overlayEnabled = asBool(out.appearance.overlayEnabled, true);
   out.appearance.showMeta = asBool(out.appearance.showMeta, true);
   out.appearance.keepStatic = asBool(out.appearance.keepStatic, true);
-  out.appearance.overlayFade = asBool(out.appearance.overlayFade, true);
+  out.appearance.overlayFade = asBool(out.appearance.overlayFade, false);
   out.appearance.frameBackground = String(out.appearance.frameBackground || defaultSettings().appearance.frameBackground);
 
   const r = out.appearance.overlayRect || {};
