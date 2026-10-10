@@ -89,6 +89,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     profile: null,
     luminance: 0.2,
     busy: false,
+    abort: null,
     lastError: '',
     lastCost: null,
     offEvents: [],
@@ -324,7 +325,10 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
     state.busy = true;
     state.lastError = '';
+    state.abort = null;
     api.emit('busy', true);
+    api.emit('generating', true);
+    setGeneratingFlag(true);
     try {
       const s = state.settings;
 
@@ -339,6 +343,9 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         items = demoSample(count);
       } else {
         const viewers = s.audience.poolSize > 0 ? state.runtime.viewers : [];
+        // 中断信号：用户点「中断生成」时 abort，请求会真的断掉
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        state.abort = ctrl;
         const res = await generateBatch({
           api: s.api,
           profile: state.profile,
@@ -348,8 +355,14 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
           fourthWall: s.audience.fourthWall,
           knowledgeIsolation: s.audience.knowledgeIsolation !== false,
           recentGags,
+          signal: ctrl ? ctrl.signal : undefined,
           log: (m, lv) => logLine(m, lv),
         });
+        if (res.aborted) {
+          // 中断 = 主动取消，不是错误；**这一批不显示**（直接返回，不进渲染）
+          logLine('已中断本次生成，这一批不显示', 'warn');
+          return { ok: false, aborted: true, error: '已中断' };
+        }
         if (!res.ok) {
           state.lastError = res.error;
           api.emit('error', res.error);
@@ -396,6 +409,18 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         });
       }
 
+      /**
+       * 渲染前的**最后一次中断检查**。
+       *
+       * 必须放在"写历史"之前 —— 否则被中断的这一批虽然不显示，却已经进了历史，
+       * 之后会被「重播」放出来，等于"中断了个寂寞"。
+       * 所以先判定，判定通过才记账。
+       */
+      if (state.abort?.signal?.aborted) {
+        logLine('已中断本次生成，这一批不显示', 'warn');
+        return { ok: false, aborted: true, error: '已中断' };
+      }
+
       /* 记账 */
       const batchNo = ++state.runtime.batchNo;
       const batch = {
@@ -428,7 +453,53 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       return { ok: false, error: msg };
     } finally {
       state.busy = false;
+      state.abort = null;
+      setGeneratingFlag(false);
       api.emit('busy', false);
+      api.emit('generating', false);
+    }
+  }
+
+  /**
+   * 中断正在进行的生成。
+   *
+   * 会真的把 HTTP 请求 abort 掉（不是"假装中断"），并且**这一批不会显示** ——
+   * runBatch 里在生成后、渲染前各查一次信号，中断了就整批丢掉。
+   *
+   * @returns {{ok:boolean, error?:string}}
+   */
+  function abortGeneration() {
+    const ctrl = state.abort;
+    if (!ctrl) return { ok: false, error: '当前没有在生成' };
+    try {
+      ctrl.abort();
+    } catch (e) {
+      return { ok: false, error: `中断失败：${e?.message || e}` };
+    }
+    logLine('已中断生成', 'warn');
+    return { ok: true };
+  }
+
+  /**
+   * 把"正在生成"的状态同步到**所有**弹幕框和悬浮层上。
+   *
+   * 为什么不能只改发起的那一个：用户可能点的是悬浮层的按钮，
+   * 却想从楼层框上中断；反过来也一样。所以统一用属性标记，
+   * 由 CSS 决定"生成中"长什么样（提示文字 + 中断按钮亮起来）。
+   */
+  function setGeneratingFlag(on) {
+    try {
+      doc.querySelectorAll('.std-frame').forEach((n) => {
+        if (on) n.setAttribute('data-std-generating', '1');
+        else n.removeAttribute('data-std-generating');
+      });
+      const ov = doc.getElementById('std-overlay');
+      if (ov) {
+        if (on) ov.setAttribute('data-std-generating', '1');
+        else ov.removeAttribute('data-std-generating');
+      }
+    } catch {
+      /* noop */
     }
   }
 
@@ -689,11 +760,16 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
    * @param {object} [batch] 发起按钮所属的批次（仅用于生成时确定挂在哪一楼）
    */
   function handleQuickAction(act, batch) {
+    if (act === 'abort') {
+      const out = abortGeneration();
+      if (!out.ok) logLine(out.error || '当前没有在生成', 'warn');
+      return true;
+    }
     if (act === 'generate') {
       const mid = batch?.anchorId ?? lastMessageId();
       // 不 await：按钮点击不该让 UI 卡住，出错会通过 error 事件报出来
       runBatch({ messageId: mid, manual: true }).then((res) => {
-        if (!res?.ok && res?.error) api.emit('error', res.error);
+        if (!res?.ok && !res?.aborted && res?.error) api.emit('error', res.error);
       });
       return true;
     }
@@ -1029,6 +1105,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     onAssistantMessage,
     replayBatch,
     removeBatch,
+    abortGeneration,
     renderBatch,
     refreshInjection,
     buildInjectionText,

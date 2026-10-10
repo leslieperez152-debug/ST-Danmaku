@@ -162,17 +162,28 @@ export function parseJsonLoose(text) {
 
 /* ───────────── 带超时的 fetch ───────────── */
 
-async function fetchWithTimeout(url, init, timeoutMs) {
+/**
+ * 带超时的 fetch，并且可以接受**外部中断信号**。
+ *
+ * 两个中断来源要一起生效：
+ *   · 内部：超时（timeoutMs）；
+ *   · 外部：用户点了「中断生成」。
+ * 这里手工桥接而不是用 `AbortSignal.any()` —— 后者在旧 WebView 里没有。
+ */
+async function fetchWithTimeout(url, init, timeoutMs, externalSignal) {
   const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
   let timer = null;
-  if (ctrl && timeoutMs > 0) {
-    timer = setTimeout(() => {
-      try {
-        ctrl.abort();
-      } catch {
-        /* noop */
-      }
-    }, timeoutMs);
+  const doAbort = () => {
+    try {
+      ctrl?.abort();
+    } catch {
+      /* noop */
+    }
+  };
+  if (ctrl && timeoutMs > 0) timer = setTimeout(doAbort, timeoutMs);
+  if (ctrl && externalSignal) {
+    if (externalSignal.aborted) doAbort();
+    else externalSignal.addEventListener?.('abort', doAbort);
   }
   try {
     const res = await fetch(url, ctrl ? { ...init, signal: ctrl.signal } : init);
@@ -180,7 +191,13 @@ async function fetchWithTimeout(url, init, timeoutMs) {
     return { ok: res.ok, status: res.status, text };
   } finally {
     if (timer) clearTimeout(timer);
+    if (ctrl && externalSignal) externalSignal.removeEventListener?.('abort', doAbort);
   }
+}
+
+/** 中断错误长这样，调用方靠它区分"用户点了中断"和"真出错了" */
+export function isAbortError(e) {
+  return e?.name === 'AbortError' || /aborted|abort/i.test(String(e?.message || ''));
 }
 
 /* ───────────── 请求体构造 ───────────── */
@@ -281,7 +298,7 @@ export function buildStRequestBody(api, messages, { jsonSchema } = {}) {
  * @returns {Promise<{ok:boolean, text:string, error:string, route:string, httpStatus?:number}>}
  */
 export async function chat(req) {
-  const { system, user, api, jsonSchema, label = '请求' } = req || {};
+  const { system, user, api, jsonSchema, label = '请求', signal } = req || {};
   const route = api?.route === 'direct' ? 'direct' : 'st';
   const timeoutMs = Number(api?.timeoutMs) || 120000;
 
@@ -290,12 +307,12 @@ export async function chat(req) {
   if (!pre.ok) return { ok: false, text: '', error: `${label}失败：${pre.error}`, route };
 
   if (route === 'direct') {
-    return chatDirect({ system, user, api, jsonSchema, label, timeoutMs });
+    return chatDirect({ system, user, api, jsonSchema, label, timeoutMs, signal });
   }
-  return chatViaSt({ system, user, api, jsonSchema, label, timeoutMs });
+  return chatViaSt({ system, user, api, jsonSchema, label, timeoutMs, signal });
 }
 
-async function chatViaSt({ system, user, api, jsonSchema, label, timeoutMs }) {
+async function chatViaSt({ system, user, api, jsonSchema, label, timeoutMs, signal }) {
   const target = resolveStTarget(api);
   // Gemini 对 system role 的处理不一致，先按合并模式发，失败再换成标准 system 消息
   const modes = target.chat_completion_source === 'makersuite' ? ['merge', 'system'] : ['system', 'merge'];
@@ -314,8 +331,13 @@ async function chatViaSt({ system, user, api, jsonSchema, label, timeoutMs }) {
           body: JSON.stringify(body),
         },
         timeoutMs,
+        signal,
       );
     } catch (e) {
+      // 用户点了中断：不要说成"超时"，也不要继续换 mode 重试
+      if (signal?.aborted) {
+        return { ok: false, text: '', error: 'ABORTED', aborted: true, route: 'st' };
+      }
       lastError = e?.name === 'AbortError' ? `请求超时（${timeoutMs}ms）` : `网络错误：${e?.message || e}`;
       break; // 网络层错误换 mode 也没用
     }
@@ -353,7 +375,7 @@ async function chatViaSt({ system, user, api, jsonSchema, label, timeoutMs }) {
   };
 }
 
-async function chatDirect({ system, user, api, jsonSchema, label, timeoutMs }) {
+async function chatDirect({ system, user, api, jsonSchema, label, timeoutMs, signal }) {
   const d = api?.direct || {};
   const base = String(d.baseUrl || '').trim().replace(/\/+$/, '');
   if (!base) {
@@ -388,8 +410,9 @@ async function chatDirect({ system, user, api, jsonSchema, label, timeoutMs }) {
 
   let res;
   try {
-    res = await fetchWithTimeout(url, { method: 'POST', headers, body: JSON.stringify(body) }, timeoutMs);
+    res = await fetchWithTimeout(url, { method: 'POST', headers, body: JSON.stringify(body) }, timeoutMs, signal);
   } catch (e) {
+    if (signal?.aborted) return { ok: false, text: '', error: 'ABORTED', aborted: true, route: 'direct' };
     const hint =
       e?.name === 'TypeError'
         ? '（多半是跨域被拦：本地小模型端点一般要开 CORS，或改用"走酒馆后端"路线）'

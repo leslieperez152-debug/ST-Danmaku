@@ -103,8 +103,16 @@ export function createFrame({ doc, appearance, luminance, meta, items, onAction 
 
   const metaText = doc.createElement('span');
   metaText.className = 'std-frame-meta';
+  metaText.setAttribute('data-std-meta', '1');
   metaText.textContent = `${items.length} 条`;
   head.appendChild(metaText);
+
+  // 「生成中…」提示 + 中断按钮：都在框上，不用跑去面板
+  const genHint = doc.createElement('span');
+  genHint.className = 'std-gen-hint';
+  genHint.setAttribute('data-std-genhint', '1');
+  genHint.textContent = '生成中…';
+  head.appendChild(genHint);
 
   const spacer = doc.createElement('span');
   spacer.className = 'std-spacer';
@@ -122,6 +130,7 @@ export function createFrame({ doc, appearance, luminance, meta, items, onAction 
   // 带文字的按钮：只画图标别人不知道那是什么
   head.appendChild(mkBtn('↻ 重播', 'replay', '重播这一批（不重新请求模型）'));
   head.appendChild(mkBtn('＋ 生成', 'generate', '按当前正文再出一批新弹幕'));
+  head.appendChild(mkBtn('■ 中断', 'abort', '中断这次生成（中断后这一批不会显示）'));
   head.appendChild(mkBtn('✕', 'hide', '收起来（内容还在，点标题展开）'));
   root.appendChild(head);
 
@@ -339,6 +348,11 @@ function attachControls(frame, doc, appearance) {
     if (act === 'generate') {
       ev.stopPropagation();
       if (typeof appearance?.onAction === 'function') appearance.onAction('generate');
+      return;
+    }
+    if (act === 'abort') {
+      ev.stopPropagation();
+      if (typeof appearance?.onAction === 'function') appearance.onAction('abort');
       return;
     }
     if (act === 'hide') {

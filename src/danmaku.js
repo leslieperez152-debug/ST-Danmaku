@@ -507,6 +507,7 @@ export async function generateBatch(input) {
     fourthWall = 20,
     recentGags = [],
     knowledgeIsolation = true,
+    signal,
     log = () => {},
   } = input || {};
 
@@ -516,7 +517,11 @@ export async function generateBatch(input) {
     system: batchSystemPrompt({ knowledgeIsolation }),
     user: batchUserPrompt({ profile, story, viewers, count, fourthWall, recentGags, knowledgeIsolation }),
     jsonSchema: batchJsonSchema(count),
+    signal,
   });
+
+  // 用户点了中断：明确区分于"失败"，让上层知道这是主动取消
+  if (res.aborted) return { ok: false, aborted: true, items: [], error: '已中断', raw: '' };
 
   if (!res.ok) return { ok: false, items: [], error: res.error || '生成失败', raw: res.text || '' };
 

@@ -1044,6 +1044,42 @@ textarea.std-input {
   color: #fff;
 }
 
+/* ── 生成中：提示文字与中断按钮 ──
+   默认都藏起来，只有所在容器带上 data-std-generating 才显示。
+   这样"点哪个都能中断"这件事由属性驱动，不用改 JS 里的可见性。 */
+.std-gen-hint {
+  display: none;
+  font-size: 11px;
+  color: #ffd479;
+  flex: none;
+  animation: std-blink 1.1s ease-in-out infinite;
+}
+
+[data-std-generating='1'] .std-gen-hint {
+  display: inline-block;
+}
+
+/* 中断按钮平时灰着、不可点；生成中才亮起来 */
+.std-frame-btn[data-std-act='abort'],
+.std-ov-btn[data-std-ov-abort] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+[data-std-generating='1'] .std-frame-btn[data-std-act='abort'],
+[data-std-generating='1'] .std-ov-btn[data-std-ov-abort] {
+  opacity: 1;
+  cursor: pointer;
+  color: #ffb3b3;
+  border-color: rgba(255, 120, 120, 0.6);
+}
+
+[data-std-generating='1'] .std-frame-btn[data-std-act='abort']:hover,
+[data-std-generating='1'] .std-ov-btn[data-std-ov-abort]:hover {
+  background: rgba(255, 90, 90, 0.22);
+  color: #fff;
+}
+
 .std-dw-subbtns {
   display: flex;
   flex-wrap: wrap;

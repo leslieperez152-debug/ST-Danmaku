@@ -3688,14 +3688,14 @@ await test('开场白不挂框，但后续楼层照挂', async () => {
   app.destroy();
 });
 
-await test('框上必须带「重播」「生成」「收起」三个按钮', async () => {
+await test('框上必须带「重播」「生成」「中断」「收起」四个按钮', async () => {
   const { d, app } = makeFrameEnv();
   app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
   await queueOneBatch(2);
   await app.runBatch({ messageId: 1, manual: true });
   const head = d.querySelector('.std-frame .std-frame-head');
   const acts = head.querySelectorAll('[data-std-act]').map((b) => b.getAttribute('data-std-act')).sort();
-  eq(acts.join(','), 'generate,hide,replay', `框上应当有三个按钮，实际 ${acts.join(',')}`);
+  eq(acts.join(','), 'abort,generate,hide,replay', `框上应当有四个按钮，实际 ${acts.join(',')}`);
   app.destroy();
 });
 
@@ -3850,6 +3850,181 @@ await test('把 frameHeight 设得很小（只够一行）时，框依然要出�
   app.destroy();
 });
 
+await test('循环：连跑多轮也不断链（单轮出错也要继续排下一次）', async () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  const items = [{ 昵称: '甲', 内容: 'a', color: '#fff', 速度: 110, 延迟: 0, 轨道: 0 }];
+  ov.playOverlay(d2, items, { appearance: { overlayLoop: true, fontSize: 15 } });
+  const root = d2.getElementById('std-overlay');
+  const stage = root.querySelector('.std-ov-stage');
+  const node = stage.children[0];
+
+  // 让 restart 里可用的两条路都"坏掉"，模拟重启失败
+  const savedGetAnim = node.getAnimations;
+  node.getAnimations = () => {
+    throw new Error('模拟 getAnimations 炸了');
+  };
+  Object.defineProperty(node, 'offsetWidth', {
+    configurable: true,
+    get() {
+      throw new Error('模拟强制回流也炸了');
+    },
+  });
+
+  // 等过两轮循环周期（下限 1.5s），期间每一轮 restart 都会抛异常
+  await new Promise((resolve) => {
+    const wait = setTimeout(resolve, 3600);
+    if (wait.unref) wait.unref();
+  });
+
+  // 关键：跑了几轮之后，循环定时器还在（没断链）
+  ok(root.__std.loopTimer, '循环定时器必须还在（单轮出错不能断链）');
+  ok(!root.__std.stopped, '不该被误停');
+  eq(stage.children.length, 1, '弹幕不该因为单轮出错被清掉');
+  // 层仍然可见
+  eq(root.getAttribute('data-std-hidden'), null, '层必须还可见');
+
+  node.getAnimations = savedGetAnim;
+  ov.stopOverlay(d2);
+  eq(root.__std.loopTimer, null, 'stopOverlay 必须把循环定时器也清掉，否则它还会把自己排回来');
+});
+
+await test('循环：把整个节点树清空后，restart 不会崩（防御性检查）', () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  ov.playOverlay(d2, [{ 昵称: '甲', 内容: 'a', color: '#fff', 速度: 110, 延迟: 0, 轨道: 0 }], {
+    appearance: { overlayLoop: true, fontSize: 15 },
+  });
+  const root = d2.getElementById('std-overlay');
+  // 手动清空舞台（模拟别处清过），再触发一次重排
+  root.querySelector('.std-ov-stage').innerHTML = '';
+  ov.relayoutOverlay(d2); // 不该抛
+  ok(true, '没抛异常就算过');
+  ov.stopOverlay(d2);
+});
+
+/* ───────────── 中断生成 ───────────── */
+
+section('13o. 随时可中断，中断后不显示');
+
+await test('中断：真的把请求 abort 掉，并且这一批不显示', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
+  // 先出一批，让框存在（这样才能把"生成中"标记打在框上）
+  await queueOneBatch(2);
+  ok((await app.runBatch({ messageId: 1, manual: true })).ok, '先出一批');
+  eq(d.querySelectorAll('.std-frame').length, 1, '基线：应当有一个框');
+
+  // 第二次请求挂着不返回，直到被 abort。
+  // ⚠️ 这个假的 fetch 装在**全局**上，用完必须恢复，
+  // 否则后续用例全都卡在这里（曾经就是这么把 120 秒超时耗光的）。
+  const realFetch = globalThis.fetch;
+  let sawAbort = false;
+  globalThis.fetch = (url, init) =>
+    new Promise((resolve, reject) => {
+      const sig = init?.signal;
+      if (sig) {
+        sig.addEventListener('abort', () => {
+          sawAbort = true;
+          const e = new Error('aborted');
+          e.name = 'AbortError';
+          reject(e);
+        });
+      }
+      // 永不 resolve，只能被 abort 打断
+    });
+
+  let res;
+  try {
+    const pending = app.runBatch({ messageId: 1, manual: true });
+    await new Promise((r) => setTimeout(r, 40)); // 让 runBatch 真正进入请求
+
+    // 生成中：框应当被标记（这样"点哪个都能中断"）
+    eq(d.querySelector('.std-frame')?.getAttribute('data-std-generating'), '1', '框应当标记为生成中');
+
+    const out = app.abortGeneration();
+    ok(out.ok, `中断应当成功：${out.error}`);
+    res = await pending;
+  } finally {
+    globalThis.fetch = realFetch; // 一定要还回去
+  }
+
+  ok(res.aborted, 'runBatch 应当报告 aborted');
+  ok(sawAbort, '必须真的把请求 abort 掉，而不是假装中断');
+
+  await new Promise((r) => setTimeout(r, 30));
+  // 中断后：这一批不显示（框还是上一批那个，不该多出来）
+  eq(d.querySelectorAll('.std-frame').length, 1, '中断之后不该冒出新的弹幕框');
+  eq(app.state.runtime.history.length, 1, '中断的这一批不该进历史（否则会被重播出来）');
+  eq(d.querySelector('.std-frame')?.getAttribute('data-std-generating'), null, '生成中标记应当被清掉');
+  app.destroy();
+});
+
+await test('中断：没有在生成时点中断不会出乱子', () => {
+  const { d, app } = makeFrameEnv();
+  const out = app.abortGeneration();
+  eq(out.ok, false, '没在生成时应当返回 false');
+  ok(/没有在生成/.test(out.error || ''), `应当给出人话提示：${out.error}`);
+  app.destroy();
+});
+
+await test('中断：生成拿到结果后、渲染前点中断，这一批也不显示', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
+  await queueOneBatch(2);
+  const base = await app.runBatch({ messageId: 1, manual: true });
+  ok(base.ok, `先出一批做基线（实际：${base.error || 'ok'}）`);
+  eq(app.state.runtime.history.length, 1, '基线：1 批历史');
+
+  // 拿到结果之后、返回给调用方之前就 abort —— 命中"渲染前的中断检查"
+  const realFetch = globalThis.fetch;
+  let abortArmed = false;
+  globalThis.fetch = async (url, init) => {
+    const res = await realFetch(url, init);
+    if (abortArmed) {
+      try {
+        app.state.abort?.abort();
+      } catch {
+        /* noop */
+      }
+    }
+    return res;
+  };
+  await queueOneBatch(2);
+  abortArmed = true; // 只让**下一批**触发中断，不影响基线
+  let r2;
+  try {
+    r2 = await Promise.race([
+      app.runBatch({ messageId: 1, manual: true }),
+      new Promise((r) => {
+        const t = setTimeout(() => r({ ok: false, error: '本条测试超时（内部卡住了）' }), 8000);
+        if (t.unref) t.unref();
+      }),
+    ]);
+  } finally {
+    abortArmed = false;
+    globalThis.fetch = realFetch;
+  }
+  ok(r2.aborted, `渲染前中断也应当报告 aborted：${JSON.stringify(r2).slice(0, 90)}`);
+  eq(app.state.runtime.history.length, 1, '被中断的这一批不该进历史（否则会被重播出来）');
+  app.destroy();
+});
+
+await test('生成中标记：所有框与悬浮层一起点亮，结束后一起熄灭', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false }, appearance: { overlayEnabled: true } });
+  await queueOneBatch(2);
+  await app.runBatch({ messageId: 1, manual: true });
+  // 结束后不该残留标记
+  const frames = d.querySelectorAll('.std-frame');
+  eq(frames.length, 1);
+  eq(frames[0].getAttribute('data-std-generating'), null, '结束后标记要清掉');
+  eq(d.getElementById('std-overlay').getAttribute('data-std-generating'), null, '悬浮层的标记也要清掉');
+  app.destroy();
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {
@@ -3929,4 +4104,20 @@ if (failed) {
   process.exitCode = 1;
 } else {
   console.log('全部通过 ✅');
+}
+
+/**
+ * 收尾：清掉所有还挂着的定时器。
+ *
+ * 为什么需要：有些用例会留下"模拟生成中"的定时器或故意不返回的请求，
+ * 它们会把 Node 进程吊住不退出（表现为测试跑完了但不返回）。
+ * 这一句只影响测试进程，不碰产品代码。
+ */
+try {
+  const timers = process._getActiveHandles?.() || [];
+  for (const h of timers) {
+    if (h && typeof h.unref === 'function' && h !== process.stdout && h !== process.stderr) h.unref();
+  }
+} catch {
+  /* noop */
 }

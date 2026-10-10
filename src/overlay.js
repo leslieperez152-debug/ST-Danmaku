@@ -41,7 +41,13 @@ export function ensureOverlay(doc) {
   count.className = 'std-ov-count';
   bar.appendChild(count);
 
-  // 悬浮层自己的两个操作按钮：看弹幕的地方就能直接再要一批 / 重播
+  // 「生成中…」提示：由 CSS 按层的 data-std-generating 决定显不显示
+  const genHint = doc.createElement('span');
+  genHint.className = 'std-gen-hint';
+  bar.appendChild(genHint);
+  genHint.textContent = '生成中…';
+
+  // 悬浮层自己的操作按钮：看弹幕的地方就能直接再要一批 / 重播 / 中断
   const mkOvBtn = (label, act, titleText) => {
     const b = doc.createElement('button');
     b.type = 'button';
@@ -53,6 +59,9 @@ export function ensureOverlay(doc) {
   };
   bar.appendChild(mkOvBtn('↻ 重播', 'replay', '重播最近一批（不重新请求模型）'));
   bar.appendChild(mkOvBtn('＋ 生成', 'generate', '按当前正文再出一批新弹幕'));
+  const abortBtn = mkOvBtn('■ 中断', 'abort', '中断这次生成（中断后这一批不会显示）');
+  abortBtn.setAttribute('data-std-ov-abort', '1');
+  bar.appendChild(abortBtn);
 
   const hide = doc.createElement('button');
   hide.type = 'button';
@@ -245,19 +254,42 @@ export function playOverlay(doc, items, opts = {}) {
   /**
    * 循环播放：弹幕流本来就不该"播一次就没了"。
    *
-   * 做法是把每一轮的动画**原地重启**（`animation = 'none'` → 强制回流 → 恢复），
-   * 而不是删掉重建节点 —— 后者每轮都要重排 DOM，久了会卡。
+   * 做法是把每一轮的动画**原地重启**，而不是删掉重建节点 —— 后者每轮都要重排 DOM，久了会卡。
    *
-   * ⚠️ 关键细节：`animation` 是简写属性，把它置 `'none'` 会**连内联的
-   * animation-delay / animation-duration 一起清掉**。只恢复 `animation = ''`
-   * 的话，第二轮会变成"所有弹幕同时冒出来 + 用 CSS 里的默认时长"，
-   * 看起来根本不是重新播一遍。所以必须把记好的 时长/延时 再贴回去。
+   * 两个坑：
+   *   · `animation` 是简写属性，置 `'none'` 会**连内联的 animation-delay / duration 一起清掉**。
+   *     只恢复 `animation = ''` 的话，第二轮会变成"所有弹幕同时冒出来 + 用 CSS 默认时长"。
+   *     所以必须把记好的时长/延时贴回去。
+   *   · `void node.offsetWidth` 是最常见的强制回流手法，但在某些 WebView 里读到的是缓存值、
+   *     不一定真触发回流，于是动画不重启（表现就是"播几轮就不动了"）。
+   *     所以优先用 Web Animations API 直接 cancel + play（最可靠），
+   *     没有才退回"置 none + 回流 + 恢复"。
    */
   const restart = () => {
     for (const node of stage.children) {
       const timing = node.__stdTiming || {};
+      // 首选：Web Animations API（现代浏览器与较新的 WebView 都有）
+      try {
+        if (typeof node.getAnimations === 'function') {
+          const anims = node.getAnimations();
+          if (anims && anims.length) {
+            for (const a of anims) {
+              try {
+                a.cancel();
+                a.play();
+              } catch {
+                /* 单个动画出问题不该影响其它 */
+              }
+            }
+            continue;
+          }
+        }
+      } catch {
+        /* 退回下面的写法 */
+      }
+      // 退回：置 none → 强制回流 → 恢复，并把时长/延时贴回去
       node.style.animation = 'none';
-      void node.offsetWidth; // 强制回流，让浏览器忘掉上一轮的动画
+      void node.offsetWidth;
       node.style.animation = '';
       if (timing.dur) node.style.animationDuration = `${Number(timing.dur).toFixed(2)}s`;
       if (timing.delay !== undefined) node.style.animationDelay = `${Number(timing.delay).toFixed(2)}s`;
@@ -275,19 +307,35 @@ export function playOverlay(doc, items, opts = {}) {
      *
      * 另外用 root.__std.stopped 做闸门：光 clearTimeout 挡不住"已经被排进队列、
      * 马上就要跑"的那一个，闸门才能真正停住（否则测试进程永远不退出）。
+     *
+     * ⚠️ 两个曾经让"播几轮就不重播了"的坑：
+     *   1. tick 里只要抛一次异常，链条就断了，而且**没有任何补救** ——
+     *      于是播几轮之后永远停住。所以整个 tick 用 try/catch 包住，
+     *      并且把"排下一次"放进 finally（出错也继续排）。
+     *   2. 以前写 `root.__std.timers = [next]` **覆盖整个数组**，
+     *      会把还在等的其它定时器 id 丢掉。现在只登记自己的那个，不动别人。
      */
     const cycle = Math.max(1500, batchMs);
     root.__std.stopped = false;
     const tick = () => {
       if (root.__std.stopped) return;
-      restart();
-      const next = setTimeout(tick, cycle);
-      // Node 里 unref 让这个定时器不阻止进程退出（浏览器里没有这个方法，会被忽略）。
-      // 循环弹幕本来就是"只要页面活着就一直播"，不该把测试进程吊住。
-      if (typeof next?.unref === 'function') next.unref();
-      root.__std.timers = [next]; // 只保留"当前这一个"，stopOverlay 才清得干净
+      try {
+        restart();
+      } catch (e) {
+        // 单轮重启失败不该让整条循环链断掉
+        if (typeof console !== 'undefined' && console.warn) console.warn('[弹幕] 重启动画失败', e);
+      } finally {
+        if (!root.__std.stopped) {
+          const next = setTimeout(tick, cycle);
+          // Node 里 unref 让这个定时器不阻止进程退出（浏览器里没有这个方法，会被忽略）。
+          if (typeof next?.unref === 'function') next.unref();
+          // 登记"当前这一个"（替换自己上一轮的登记），但别清掉别人的定时器
+          root.__std.loopTimer = next;
+        }
+      }
     };
     timer = setTimeout(tick, cycle);
+    root.__std.loopTimer = timer;
     if (typeof timer?.unref === 'function') timer.unref();
   } else {
     timer = setTimeout(() => {
@@ -322,6 +370,11 @@ export function stopOverlay(doc) {
   root.__std.stopped = true;
   (root.__std.timers || []).forEach((t) => clearTimeout(t));
   root.__std.timers = [];
+  // 循环定时器单独记着，也要清掉，否则它还会把自己排回来
+  if (root.__std.loopTimer) {
+    clearTimeout(root.__std.loopTimer);
+    root.__std.loopTimer = null;
+  }
   root.__std.stage.innerHTML = '';
   if (root.__std.count) root.__std.count.textContent = '';
 }
