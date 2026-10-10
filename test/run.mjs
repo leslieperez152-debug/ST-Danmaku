@@ -2095,6 +2095,159 @@ await test('排查明细默认折叠，点「排查」才展开', async () => {
   app.destroy();
 });
 
+/* ───────────── 13f. 模型选择（先拉取再选，不让人手打） ───────────── */
+
+section('13f. 模型选择与额外请求头');
+
+function makeApiTabEnv() {
+  const d = createMiniDocument();
+  useDoc(d);
+  resetTavernState();
+  const app = mainMod.createApp({ storage: d.defaultView.localStorage, doc: d, win: d.defaultView });
+  app.init();
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  panel.toggle(true);
+  const tab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'api');
+  ok(tab, '应当有「连接」页签');
+  tab.dispatch('click', { target: tab });
+  return { d, app, panel };
+}
+
+await test('没拉取过模型时，下拉框禁用并提示去拉取', () => {
+  const { app, panel } = makeApiTabEnv();
+  app.clearModels();
+  panel.toggle(true);
+  const tab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'api');
+  tab.dispatch('click', { target: tab });
+
+  const sel = panel.el.querySelector('select[data-std-path="api.model"]');
+  ok(sel, '应当有模型下拉框（不是纯文本框）');
+  ok(!sel.querySelector('input'), '不该再有一个裸的模型名输入框当主控件');
+  ok(sel.getAttribute('disabled') !== null, '没列表时应当禁用，别让人误以为能选');
+  const hint = panel.el.querySelector('.std-body').innerHTML;
+  ok(/还没拉取模型列表/.test(hint), '应当提示去拉取');
+  app.destroy();
+});
+
+await test('拉取之后模型出现在下拉框里，可以直接选', async () => {
+  const { app, panel } = makeApiTabEnv();
+  // 假后端返回模型列表
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/chat-completions/status')) {
+      const body = JSON.stringify({ data: [{ id: 'gpt-4o-mini' }, { id: 'deepseek-chat' }, { id: 'gemini-2.0-flash' }] });
+      return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+    }
+    return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) };
+  };
+
+  const res = await app.loadModels();
+  ok(res.ok, `拉取应当成功：${res.error}`);
+  eq(res.models.length, 3);
+
+  // 重新渲染连接页
+  const tab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'api');
+  tab.dispatch('click', { target: tab });
+  const sel = panel.el.querySelector('select[data-std-path="api.model"]');
+  ok(sel.getAttribute('disabled') === null, '有列表后应当可用');
+  const optionTexts = sel.querySelectorAll('option').map((o) => o.getAttribute('value'));
+  for (const m of ['gpt-4o-mini', 'deepseek-chat', 'gemini-2.0-flash']) {
+    ok(optionTexts.includes(m), `下拉框里应当有 ${m}，实际 ${optionTexts.join(',')}`);
+  }
+  ok(/已拉取 3 个模型/.test(panel.el.querySelector('.std-body').innerHTML), '应当报告已拉取');
+
+  globalThis.fetch = savedFetch;
+  app.destroy();
+});
+
+await test('选了模型会写回设置', async () => {
+  const { app, panel } = makeApiTabEnv();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: '模型甲' }] }), json: async () => ({ data: [{ id: '模型甲' }] }) });
+  await app.loadModels();
+  const tab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'api');
+  tab.dispatch('click', { target: tab });
+
+  const sel = panel.el.querySelector('select[data-std-path="api.model"]');
+  const opt = sel.querySelectorAll('option').find((o) => o.getAttribute('value') === '模型甲');
+  ok(opt, '应当有该模型的选项');
+  sel.value = '模型甲';
+  panel.el.dispatch('change', { target: sel });
+  eq(app.state.settings.api.model, '模型甲', '应当写回设置');
+  globalThis.fetch = savedFetch;
+  app.destroy();
+});
+
+await test('当前模型不在列表里时也会显示出来，不会凭空消失', () => {
+  const { app, panel } = makeApiTabEnv();
+  app.updateSettings({ api: { model: '某个手填的模型' } });
+  app.clearModels();
+  app.state.models = ['别的模型'];
+  const tab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'api');
+  tab.dispatch('click', { target: tab });
+  const sel = panel.el.querySelector('select[data-std-path="api.model"]');
+  const values = sel.querySelectorAll('option').map((o) => o.getAttribute('value'));
+  ok(values.includes('某个手填的模型'), `当前值应当保留在选项里，实际 ${values.join(',')}`);
+  app.destroy();
+});
+
+await test('拉取失败时给出可照做的提示（并提示可以手填）', async () => {
+  const { app } = makeApiTabEnv();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 404, text: async () => 'nope', json: async () => ({}) });
+  const res = await app.loadModels();
+  eq(res.ok, false);
+  ok(/手填|不支持|没返回/.test(res.error), `提示应当可照做：${res.error}`);
+  globalThis.fetch = savedFetch;
+  app.destroy();
+});
+
+await test('模型列表按来源缓存，换来源后会被判定为过期', async () => {
+  const { app } = makeApiTabEnv();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'A' }] }), json: async () => ({ data: [{ id: 'A' }] }) });
+  await app.loadModels();
+  eq(app.modelList().length, 1);
+  ok(/已拉取 1 个模型/.test(app.describeModelList()));
+
+  // 换固定来源 → 列表应被判为过期
+  app.updateSettings({ api: { sourceMode: 'fixed', source: 'deepseek' } });
+  ok(/建议重新拉一次/.test(app.describeModelList()), `换来源后应当提醒重拉：${app.describeModelList()}`);
+
+  globalThis.fetch = savedFetch;
+  app.destroy();
+});
+
+await test('模型列表能落盘并在下次启动时读回', async () => {
+  const { d, app } = makeApiTabEnv();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: '持久化模型' }] }), json: async () => ({ data: [{ id: '持久化模型' }] }) });
+  await app.loadModels();
+  const storage = d.defaultView.localStorage;
+  app.destroy();
+
+  // 用同一个 storage 重新起一个 app
+  const app2 = mainMod.createApp({ storage, doc: d, win: d.defaultView });
+  app2.init();
+  eq(app2.modelList().length, 1, '重启后应当从缓存读回模型列表');
+  eq(app2.modelList()[0], '持久化模型');
+  app2.destroy();
+  globalThis.fetch = savedFetch;
+});
+
+await test('「额外请求头」已经彻底去掉（界面与设置里都不再有）', () => {
+  const { app, panel } = makeApiTabEnv();
+  const html = panel.el.querySelector('.std-body').innerHTML;
+  ok(!/额外请求头/.test(html), '界面上不该再有这一项');
+  ok(!('extraHeaders' in app.state.settings.api.direct), '设置对象里也不该再有这个字段');
+  // 旧版本遗留的值应当被清掉
+  const s = store.normalizeSettings({ api: { direct: { extraHeaders: 'X-Foo: bar' } } });
+  ok(!('extraHeaders' in s.api.direct), '旧数据里的该字段应当被清理掉');
+  ok(!('extraHeaders' in store.defaultSettings().api.direct), '默认设置里不该有它');
+  app.destroy();
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

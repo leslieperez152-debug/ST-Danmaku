@@ -367,10 +367,6 @@ async function chatDirect({ system, user, api, jsonSchema, label, timeoutMs }) {
   const url = /\/chat\/completions$/.test(base) ? base : `${base}/chat/completions`;
   const headers = { 'Content-Type': 'application/json' };
   if (d.apiKey) headers.Authorization = `Bearer ${d.apiKey}`;
-  for (const line of String(d.extraHeaders || '').split(/\r?\n/)) {
-    const m = /^\s*([^:]+):\s*(.*)$/.exec(line);
-    if (m) headers[m[1].trim()] = m[2].trim();
-  }
 
   const body = {
     model,
@@ -489,6 +485,7 @@ export async function fetchModelList(api) {
     chat_completion_source: target.chat_completion_source,
     model: target.model,
   };
+  if (target.custom_url) body.custom_url = target.custom_url;
   if (target.reverse_proxy) body.reverse_proxy = target.reverse_proxy;
   try {
     const res = await fetchWithTimeout(
@@ -496,15 +493,52 @@ export async function fetchModelList(api) {
       { method: 'POST', headers: requestHeaders(), body: JSON.stringify(body) },
       30000,
     );
+    if (!res.ok) {
+      return {
+        ok: false,
+        models: [],
+        error: `${humanizeBackendError(res.status, res.text)}（这个来源可能不支持列模型，那就手填模型名吧）`,
+      };
+    }
+    let data = null;
+    try {
+      data = JSON.parse(res.text);
+    } catch {
+      return { ok: false, models: [], error: '酒馆后端返回的不是 JSON' };
+    }
+    const models = []
+      .concat(data?.data || [], data?.models || [])
+      .map((m) => (typeof m === 'string' ? m : m?.id || m?.name || ''))
+      .filter(Boolean);
+    if (!models.length) {
+      return { ok: false, models: [], error: '这个来源没有返回模型列表，只能手填模型名了' };
+    }
+    return { ok: true, models, error: '' };
+  } catch (e) {
+    return { ok: false, models: [], error: e?.message || String(e) };
+  }
+}
+
+/** 直连路线拉模型列表：GET {baseUrl}/models */
+export async function fetchModelListDirect(api) {
+  const d = api?.direct || {};
+  const base = String(d.baseUrl || '').trim().replace(/\/+$/, '');
+  if (!base) return { ok: false, models: [], error: '直连路线还没填 API 地址' };
+  const url = /\/models$/.test(base) ? base : `${base}/models`;
+  const headers = {};
+  if (d.apiKey) headers.Authorization = `Bearer ${d.apiKey}`;
+  try {
+    const res = await fetchWithTimeout(url, { method: 'GET', headers }, 30000);
     if (!res.ok) return { ok: false, models: [], error: `HTTP ${res.status}` };
     const data = JSON.parse(res.text);
     const models = []
       .concat(data?.data || [], data?.models || [])
       .map((m) => (typeof m === 'string' ? m : m?.id || m?.name || ''))
       .filter(Boolean);
-    return { ok: true, models, error: '' };
+    return models.length ? { ok: true, models, error: '' } : { ok: false, models: [], error: '端点没有返回模型列表' };
   } catch (e) {
-    return { ok: false, models: [], error: e?.message || String(e) };
+    const hint = e?.name === 'TypeError' ? '（多半是跨域被拦）' : '';
+    return { ok: false, models: [], error: `${e?.message || String(e)}${hint}` };
   }
 }
 

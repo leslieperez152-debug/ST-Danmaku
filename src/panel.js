@@ -53,8 +53,10 @@ function pages(app) {
     {
       id: 'api',
       label: '连接',
-      render: (s) => {
+      render: (s, ctx) => {
         const a = s.api;
+        const models = app.modelList();
+        const manualOpen = !!(ctx && ctx.modelInputOpen);
         return [
           '<div class="std-hint">弹幕是独立请求，不占正文 token。两条路线选一条即可。</div>',
           row2(
@@ -115,21 +117,37 @@ function pages(app) {
             : [
                 row2('API 地址', text('api.direct.baseUrl', a.direct.baseUrl, '例：http://127.0.0.1:1234/v1')),
                 row2('API Key', password('api.direct.apiKey', a.direct.apiKey, '本地端点可留空')),
-                row2('模型名', text('api.direct.model', a.direct.model || a.model, '必填')),
-                row2('额外请求头', textarea('api.direct.extraHeaders', a.direct.extraHeaders, '每行一条，如：X-Foo: bar')),
                 '<div class="std-hint">直连如果报跨域错误，是端点没开 CORS，换甲路线即可。</div>',
               ].join(''),
           sep(),
-          row2('模型名', text('api.model', a.model, '留空 = 用酒馆当前模型（仅甲路线）')),
+          '<div class="std-sec">模型</div>',
+          row2(
+            '选择模型',
+            a.route === 'direct'
+              ? chooseModel('api.direct.model', a.direct.model || a.model, models)
+              : chooseModel('api.model', a.model, models),
+            app.describeModelList(),
+          ),
+          btnRow([
+            { label: '拉取模型列表', act: 'list-models', primary: true },
+            { label: '清空列表', act: 'clear-models' },
+            { label: '测试连接', act: 'test-api' },
+            { label: manualOpen ? '收起手填' : '手填模型名', act: 'toggle-model-input' },
+          ]),
+          manualOpen
+            ? row2(
+                '模型名（手填）',
+                a.route === 'direct'
+                  ? text('api.direct.model', a.direct.model || a.model, '端点不给模型列表时才需要')
+                  : text('api.model', a.model, '端点不给模型列表时才需要'),
+                '留空 = 用酒馆当前模型（仅甲路线）',
+              )
+            : '',
+          sep(),
           row2('温度', number('api.temperature', a.temperature, 0, 2, 0.05)),
           row2('最大输出', number('api.maxTokens', a.maxTokens, 64, 32000, 1)),
           row2('超时（毫秒）', number('api.timeoutMs', a.timeoutMs, 5000, 600000, 1000)),
-          row2('结构化输出', toggle('api.useJsonSchema', a.useJsonSchema, '让模型按 JSON 返回，成功率更高；某些端点不支持可关掉')),
-          sep(),
-          btnRow([
-            { label: '测试连接', act: 'test-api', primary: true },
-            { label: '拉取模型列表', act: 'list-models' },
-          ]),
+          row2('结构化输出', toggle('api.useJsonSchema', a.useJsonSchema, '默认关。有些端点不支持这个参数，带了会直接被拒；开着的话失败时会自动去掉重试')),
           '<div id="std-api-result" class="std-result"></div>',
         ].join('');
       },
@@ -459,6 +477,31 @@ function colorPicker(current, presets = FRAME_BG_PRESETS, previewText = '预览�
     <div class="std-preview-wrap"><div class="std-preview" style="background:${esc(current)}">${esc(previewText)}</div></div>`;
 }
 
+/* ───────────── 模型选择 ───────────── */
+
+/**
+ * 模型下拉框。
+ * 设计意图：**不要让用户手打模型名**（拼错一个字母就白等一次超时）。
+ * 所以流程是「先拉取列表 → 从列表里选」；端点不给列表时，才退回手填。
+ */
+function chooseModel(path, current, models) {
+  const has = Array.isArray(models) && models.length > 0;
+  const opts = [];
+  opts.push(
+    `<option value="" ${!current ? 'selected' : ''}>${has ? '（不指定 / 跟随酒馆当前模型）' : '（还没拉取到列表）'}</option>`,
+  );
+  for (const m of models || []) {
+    opts.push(`<option value="${esc(m)}" ${m === current ? 'selected' : ''}>${esc(m)}</option>`);
+  }
+  // 当前值不在列表里（手填的、或换了来源）也要显示出来，别让它凭空消失
+  if (current && !(models || []).includes(current)) {
+    opts.push(`<option value="${esc(current)}" selected>${esc(current)}（当前值，不在列表里）</option>`);
+  }
+  return `<select class="std-input" data-std-path="${path}" data-std-type="string"${
+    has ? '' : ' disabled'
+  }>${opts.join('')}</select>`;
+}
+
 function profileEditor(prof) {
   const d = prof?.data || {};
   const fields = [
@@ -494,7 +537,9 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
   let activeTab = 'home';
   let refreshTimer = null;
   let boundDoc = null; // 面板当前挂在哪个文档上
+  let diagText = '';
   let scanPhase = null; // 扫描进度（null = 没在扫）
+  let modelInputOpen = false; // 是否展开"手填模型名"
 
   const defs = pages(app);
 
@@ -586,7 +631,7 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
     const s = app.state.settings;
     [...tabEl.children].forEach((b) => b.classList.toggle('sel', b.getAttribute('data-std-tab') === activeTab));
     const def = defs.find((d) => d.id === activeTab) || defs[0];
-    bodyEl.innerHTML = def.render(s, { scanPhase });
+    bodyEl.innerHTML = def.render(s, { scanPhase, modelInputOpen });
     updateStatus();
   }
 
@@ -616,7 +661,7 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
   }
 
   /* 事件订阅：任何状态变化都尽量反映到面板 */
-  ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'books', 'cleared', 'scan'].forEach((evt) =>
+  ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'books', 'models', 'cleared', 'scan'].forEach((evt) =>
     app.on(evt, (payload) => {
       if (evt === 'scan') scanPhase = payload && payload.phase && payload.phase !== 'end' ? payload : null;
       scheduleRefresh();
@@ -746,15 +791,27 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
         btn.disabled = false;
         break;
       }
+      case 'clear-models':
+        app.clearModels();
+        setResult('std-api-result', '已清空模型列表缓存（端点换了之后建议重新拉一次）');
+        render();
+        break;
+      case 'toggle-model-input':
+        modelInputOpen = !modelInputOpen;
+        render();
+        break;
       case 'list-models': {
         btn.disabled = true;
-        setResult('std-api-result', '⏳ 正在拉取…');
-        const out = await app.listModels?.();
-        setResult(
-          'std-api-result',
-          out?.ok ? `✅ ${out.models.length} 个模型：${out.models.slice(0, 40).join('、')}` : `❌ ${out?.error || '拉取失败'}`,
-        );
+        setResult('std-api-result', '⏳ 正在拉取模型列表…');
+        const out = await app.loadModels();
+        if (out?.ok) {
+          const n = out.models.length;
+          setResult('std-api-result', `✅ 拉到 ${n} 个模型，现在可以在上面的下拉框里直接选了：${out.models.slice(0, 12).join('、')}${n > 12 ? ' …' : ''}`);
+        } else {
+          setResult('std-api-result', `❌ ${out?.error || '拉取失败'}\n（拉不到也没关系：点「手填模型名」自己填一个即可）`);
+        }
         btn.disabled = false;
+        render();
         break;
       }
       case 'reset-overlay-rect':

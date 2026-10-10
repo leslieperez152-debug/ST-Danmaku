@@ -327,11 +327,17 @@ function matches(el, selector) {
   return groups.some((g) => matchComplex(el, g.trim()));
 }
 
-/** 按分隔符切分，尊重引号（"a[data-x=\"1 2\"]" 不会被空格切开） */
+/**
+ * 按分隔符切分，尊重引号**和方括号**。
+ *
+ * 关键：必须跟踪方括号深度 —— 否则 `select[data-std-path="api.model"]` 会在
+ * 引号内的空格处被切断（这个 bug 曾让所有属性选择器在自检里静默失效）。
+ */
 function splitTopLevel(str, sep) {
   const out = [];
   let cur = '';
   let quote = '';
+  let depth = 0;
   for (const ch of str) {
     if (quote) {
       cur += ch;
@@ -343,7 +349,9 @@ function splitTopLevel(str, sep) {
       cur += ch;
       continue;
     }
-    if (ch === sep) {
+    if (ch === '[') depth++;
+    else if (ch === ']') depth = Math.max(0, depth - 1);
+    if (ch === sep && depth === 0) {
       out.push(cur);
       cur = '';
       continue;
@@ -394,12 +402,17 @@ function matchOne(el, partIn) {
     if (want !== undefined && v !== want) return false;
   }
 
+  // 关键：先把 [ ... ] 里的内容遮掉，再做 tag / class 解析。
+  // 否则 `[data-std-path="api.route"]` 里的那个点会被当成类名 `.route`，
+  // 导致"元素没有这个类" → 静默不匹配（这个 bug 曾让所有带点的属性选择器失效）。
+  const masked = part.replace(/\[[^\]]*\]/g, '');
+
   // tag（注意：".std-frame" 里的 std-frame 不是标签名，不能被当成 tag 匹配）
-  const tag = /^([a-zA-Z][\w-]*)/.exec(part.replace(/\.[\w-]+/g, ''));
+  const tag = /^([a-zA-Z][\w-]*)/.exec(masked.replace(/\.[\w-]+/g, ''));
   if (tag && tag[1] !== '*' && el.tagName !== tag[1].toUpperCase()) return false;
 
   // .class
-  const classes = [...part.matchAll(/\.([\w-]+)/g)].map((x) => x[1]);
+  const classes = [...masked.matchAll(/\.([\w-]+)/g)].map((x) => x[1]);
   for (const c of classes) {
     if (!el.classList.contains(c)) return false;
   }

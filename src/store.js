@@ -81,7 +81,6 @@ export function defaultSettings() {
         baseUrl: '', // 例：http://127.0.0.1:1234/v1
         apiKey: '',
         model: '',
-        extraHeaders: '', // 每行一条 Key: Value
       },
     },
 
@@ -227,7 +226,8 @@ export function normalizeSettings(s) {
   out.api.direct.baseUrl = String(out.api.direct.baseUrl || '');
   out.api.direct.apiKey = String(out.api.direct.apiKey || '');
   out.api.direct.model = String(out.api.direct.model || '');
-  out.api.direct.extraHeaders = String(out.api.direct.extraHeaders || '');
+  // 早期版本有个 extraHeaders 字段，已经没有用了，顺手清掉
+  delete out.api.direct.extraHeaders;
 
   out.injection.depth = num(out.injection.depth, 4, 0, 100);
   out.injection.maxChars = num(out.injection.maxChars, 320, 40, 4000);

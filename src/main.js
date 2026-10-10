@@ -47,7 +47,7 @@ import {
 } from './st.js';
 import { scanWorldbooks, estimateScanCost } from './scan.js';
 import { generateBatch, buildViewerPool, buildStoryContext, pickGags } from './danmaku.js';
-import { chat, chatJson, fetchModelList, resolveStTarget } from './llm.js';
+import { chat, chatJson, fetchModelList, fetchModelListDirect, resolveStTarget } from './llm.js';
 import { buildPalette, sampleBackgroundLuminance, sampleBackground, shade } from './color.js';
 import {
   createFrame,
@@ -73,6 +73,9 @@ import {
   isOverlayVisible,
 } from './overlay.js';
 
+/** 模型列表缓存的存储键 */
+const MODELS_KEY = 'stdanmaku:models:v1';
+
 /** 把一批弹幕按消息归位：同一楼只留最新一批（重 roll 时不叠框），但历史照留 */
 const MAX_BATCHES_PER_MESSAGE_KEPT = 12;
 
@@ -92,6 +95,10 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     offOverlay: null,
     frames: new Map(), // messageId -> frame 对象
     cardSig: '', // 当前卡+聊天签名（换卡检测用）
+    models: [], // 已拉取到的模型列表
+    modelsAt: 0, // 拉取时间
+    modelsKey: '', // 列表是按哪个来源拉的（换来源就作废）
+    bookRetryTimer: null,
     initialized: false,
   };
 
@@ -114,6 +121,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     // 注意：Tauri IPC 有可能在扩展刚加载时还没就绪，所以失败要**重试几次** ——
     // 不能因为第一次问不到就一直是空的（那样用户就得手动点一个按钮才出来）。
     loadWorldbooksWithRetry();
+    loadModelsFromCache();
 
     ensureOverlay(doc);
     applyOverlayStyle(doc, state.settings.appearance);
@@ -580,6 +588,37 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     }
   }
 
+  /** 模型列表缓存：按来源/地址做键，换来源就作废，免得选到别的端点的模型 */
+  function modelCacheKey() {
+    const a = state.settings.api;
+    if (a.route === 'direct') return `direct:${a.direct?.baseUrl || ''}`;
+    return `st:${a.sourceMode === 'fixed' ? a.source : 'auto'}:${a.proxyPreset || ''}:${a.reverseProxy || ''}`;
+  }
+
+  function loadModelsFromCache() {
+    try {
+      const raw = JSON.parse(storage.getItem(`${MODELS_KEY}`) || 'null');
+      if (!raw || !Array.isArray(raw.models)) return;
+      if (raw.key !== modelCacheKey()) return; // 来源变了，旧列表不能用
+      state.models = raw.models;
+      state.modelsAt = Number(raw.at) || 0;
+      state.modelsKey = raw.key;
+    } catch {
+      /* noop */
+    }
+  }
+
+  function persistModels() {
+    try {
+      storage.setItem(
+        `${MODELS_KEY}`,
+        JSON.stringify({ key: state.modelsKey || modelCacheKey(), models: state.models.slice(0, 500), at: state.modelsAt }),
+      );
+    } catch {
+      /* noop */
+    }
+  }
+
   /**
    * 加载世界书清单，拿不到就按退避重试几次。
    *
@@ -840,6 +879,44 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       const css = `linear-gradient(100deg, ${shade(base, 0.28)} 0%, ${shade(base, 0.05)} 45%, ${shade(base, -0.32)} 100%)`;
       updateSettings({ appearance: { frameBackground: css, frameBgTouched: true } });
       return css;
+    },
+    /** 面板用：拉取模型列表（结果会缓存起来，下次直接可选） */
+    async loadModels() {
+      const s = state.settings;
+      const res =
+        s.api.route === 'direct'
+          ? await fetchModelListDirect(s.api)
+          : await fetchModelList(s.api);
+      if (res.ok && res.models.length) {
+        state.models = res.models;
+        state.modelsAt = Date.now();
+        state.modelsKey = modelCacheKey();
+        persistModels();
+        api.emit('models', res.models);
+      }
+      return res;
+    },
+    /** 面板用：已拉取到的模型列表 */
+    modelList() {
+      return state.models.slice();
+    },
+    /** 面板用：清掉模型列表缓存（换端点后可能不再适用） */
+    clearModels() {
+      state.models = [];
+      state.modelsAt = 0;
+      state.modelsKey = '';
+      persistModels();
+      api.emit('models', []);
+    },
+    /** 面板用：说清模型列表的状态（拉到了没、多久之前拉的） */
+    describeModelList() {
+      const n = state.models.length;
+      if (!n) return '还没拉取模型列表。点「拉取模型列表」之后就能直接选；端点不给列表时才需要手填。';
+      const when = state.modelsAt ? new Date(state.modelsAt).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+      const stale = state.modelsKey && state.modelsKey !== modelCacheKey();
+      return `已拉取 ${n} 个模型${when ? `（${when}）` : ''}${
+        stale ? '。⚠️ 你换了来源或地址，这个列表可能不适用，建议重新拉一次' : ''
+      }`;
     },
     /** 面板用：本次扫描大约要读多少字（让用户心里有数） */
     estimateScan() {
