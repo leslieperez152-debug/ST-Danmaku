@@ -19,6 +19,7 @@ const CONTAINERS = ['#extensions_settings2', '#extensions_settings'];
 export function createDrawer(app, { doc = globalThis.document } = {}) {
   let rootEl = null;
   let offFns = [];
+  let scanPhase = null; // 扫描进行中的阶段（null = 没在扫）
 
   const esc = (s) =>
     String(s ?? '')
@@ -74,13 +75,29 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
           <div class="std-dw-btns">
             <div class="menu_button std-dw-btn" data-std-dw-act="batch">出一批</div>
-            <div class="menu_button std-dw-btn" data-std-dw-act="scan">扫描世界书</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="demo">本地预览</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="open">打开完整设置</div>
           </div>
 
+          <!-- 世界书模块：勾选就发生在这里，勾哪本扫描就读哪本 -->
+          <div class="std-dw-sec">世界书</div>
+          <div class="std-dw-mode" data-std-dw-mode></div>
+          <div class="std-dw-books" data-std-dw-books></div>
+          <label class="std-dw-check"><input type="checkbox" data-std-dw="scan.followCard"><span>换卡时自动跟随该卡绑定的世界书</span></label>
+          <div class="std-dw-subbtns">
+            <div class="menu_button std-dw-btn" data-std-dw-act="books-all">勾选全部</div>
+            <div class="menu_button std-dw-btn" data-std-dw-act="books-none">全不选</div>
+            <div class="menu_button std-dw-btn" data-std-dw-act="books-auto">恢复自动跟随</div>
+          </div>
+          <div class="std-dw-btns">
+            <div class="menu_button std-dw-btn std-dw-primary" data-std-dw-act="scan">扫描世界书</div>
+            <div class="menu_button std-dw-btn" data-std-dw-act="viewers">生成观众名册</div>
+          </div>
+          <div class="std-dw-progress" data-std-dw-progress></div>
+          <div class="std-dw-applied" data-std-dw-applied></div>
+
           <div class="std-dw-result" data-std-dw-result></div>
-          <div class="std-dw-tip">弹幕是独立请求，不占正文 token。完整设置（连接 / 外观 / 观众 / 风格 / 记录）在悬浮球面板里。</div>
+          <div class="std-dw-tip">弹幕是独立请求，不占正文 token。勾选可以多选，勾哪本就扫描哪几本。外观 / 连接 / 观众 / 风格这些在「打开完整设置」里。</div>
         </div>
       </div>
     `;
@@ -104,8 +121,13 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
     rootEl.addEventListener('click', onFieldChange);
     rootEl.addEventListener('click', onClick);
 
-    ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'scan', 'cleared'].forEach((evt) => {
-      offFns.push(app.on(evt, () => render()));
+    ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'scan', 'cleared'].forEach((evt) => {
+      offFns.push(app.on(evt, (payload) => {
+        if (evt === 'scan') {
+          scanPhase = payload && payload.phase && payload.phase !== 'end' ? payload : null;
+        }
+        render();
+      }));
     });
 
     render();
@@ -139,8 +161,20 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
     } else {
       value = readValue(el);
     }
-    app.updateSettings({ [path]: value });
+    app.updateSettings(setPath({}, path, value));
     render();
+  }
+
+  /** 把 'scan.followCard' 这样的路径写成嵌套对象 */
+  function setPath(obj, path, value) {
+    const parts = String(path).split('.');
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+      cur[parts[i]] = cur[parts[i]] || {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = value;
+    return obj;
   }
 
   /** 元素属于哪种输入控件 */
@@ -167,12 +201,22 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
     return el.getAttribute?.('value') ?? '';
   }
 
-  /** 把世界书勾选写回设置（勾了任何一本 = 切到手动模式） */
+  /** 把世界书勾选写回设置（勾了任意一本 = 切到手动模式） */
   function applyBookSelection() {
-    const names = [...rootEl.querySelectorAll('[data-std-book]')]
-      .filter((n) => isChecked(n))
-      .map((n) => n.getAttribute('data-std-book'))
-      .filter(Boolean);
+    const before = app.stats().worldbooksUsed;
+    const boxes = [...rootEl.querySelectorAll('[data-std-book]')];
+    const isChecked = (n) => (typeof n.checked === 'boolean' ? n.checked : n.getAttribute('checked') !== null);
+    const nowChecked = boxes.filter(isChecked).map((n) => n.getAttribute('data-std-book')).filter((n) => n != null);
+
+    const wasManual = Array.isArray(app.state.settings.scan.sources);
+    let names;
+    if (wasManual) {
+      names = nowChecked;
+    } else {
+      const unchecked = new Set(boxes.filter((b) => !isChecked(b)).map((b) => b.getAttribute('data-std-book')));
+      names = [...new Set([...before.filter((n) => !unchecked.has(n)), ...nowChecked])];
+    }
+
     app.updateSettings({ scan: { sources: names } });
     render();
   }
@@ -208,7 +252,28 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
         res.ok
           ? `✅ 档案完成：读 ${res.profile.stats.entriesRead} 条 / ${res.profile.stats.charsRead} 字 → 总结 ${res.profile.stats.summaryChars} 字`
           : `❌ ${res.error}`,
-      );
+      );      render();
+    }
+
+    if (act === 'books-all') {
+      app.updateSettings({ scan: { sources: app.listAllWorldbooks() } });
+      render();
+      return;
+    }
+    if (act === 'books-none') {
+      app.updateSettings({ scan: { sources: [] } });
+      render();
+      return;
+    }
+    if (act === 'books-auto') {
+      app.updateSettings({ scan: { sources: null } });
+      render();
+      return;
+    }
+    if (act === 'viewers') {
+      setResult('⏳ 正在生成观众名册…');
+      const res = await app.buildViewers();
+      setResult(res.ok ? `✅ 已生成 ${res.viewers.length} 位常驻观众` : `❌ ${res.error}`);
       render();
     }
   }
@@ -221,7 +286,6 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
   function render() {
     if (!rootEl) return;
     const s = app.state.settings;
-    const st = app.stats();
 
     const setCheck = (path, value) => {
       const el = rootEl.querySelector(`[data-std-dw="${path}"]`);
@@ -237,25 +301,94 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
     setCheck('liveMode', s.liveMode);
     setCheck('autoGenerate', s.autoGenerate);
     setCheck('skipOpening', s.skipOpening);
+    setCheck('scan.followCard', s.scan.followCard);
     setNum('count', s.count);
     setNum('everyNRounds', s.everyNRounds);
 
+    renderBookList();
+    renderScanFeedback();
+    renderStatus();
+  }
+
+  /** 扫描进度与"已生效"反馈 */
+  function renderScanFeedback() {
+    const progEl = rootEl.querySelector('[data-std-dw-progress]');
+    const appliedEl = rootEl.querySelector('[data-std-dw-applied]');
+
+    if (progEl) {
+      if (scanPhase) {
+        const label = { start: '准备中', index: '① 索引条目', sample: '② 按预算取样正文', summarize: '③ 总结成观众档案' }[scanPhase.phase] || '处理中';
+        progEl.innerHTML = `<span class="std-dw-spin"></span> ${esc(label)}${scanPhase.detail ? `：${esc(scanPhase.detail)}` : ''}`;
+        progEl.classList.add('show');
+      } else {
+        progEl.classList.remove('show');
+        progEl.textContent = '';
+      }
+    }
+
+    if (appliedEl) {
+      const st = app.describeProfileStatus();
+      appliedEl.className = `std-dw-applied ${st.ready ? 'ok' : 'none'}`;
+      appliedEl.innerHTML = `<b>${st.ready ? '✅ ' : '○ '}${esc(st.title)}</b><br>${esc(st.detail)}`;
+    }
+  }
+
+  /** 世界书勾选列表：勾哪本，扫描就读哪本 */
+  function renderBookList() {
+    const host = rootEl.querySelector('[data-std-dw-books]');
+    const modeEl = rootEl.querySelector('[data-std-dw-mode]');
+    if (!host) return;
+
+    const st = app.stats();
+    const src = app.describeWorldbookSource();
+    const names = app.listAllWorldbooks();
+    const used = new Set(st.worldbooksUsed);
+
+    if (modeEl) {
+      modeEl.textContent = src.manual
+        ? `✍️ 手动选择：扫描只读勾选的书（已勾 ${used.size} 本）`
+        : `🔄 自动跟随当前卡：正在读本卡绑定的 + 全局开启的（${used.size} 本）。勾选任意一本即切到手动。`;
+      modeEl.classList.toggle('manual', !!src.manual);
+    }
+
+    if (!names.length) {
+      host.innerHTML = '<div class="std-dw-empty">这个酒馆里一本世界书都没有。插件会走「看正文学」路线，弹幕依然能出。</div>';
+      return;
+    }
+
+    host.innerHTML = names
+      .map((n) => {
+        const on = used.has(n);
+        return `<label class="std-dw-book${on ? ' on' : ''}"><input type="checkbox" data-std-book="${esc(n)}" ${
+          on ? 'checked' : ''
+        }><span>${esc(n)}</span>${src.cardBooks.includes(n) ? '<i class="std-dw-tag">本卡</i>' : ''}</label>`;
+      })
+      .join('');
+  }
+
+  function renderStatus() {
+    const st = app.stats();
+    const src = app.describeWorldbookSource();
     const badge = rootEl.querySelector('[data-std-dw-badge]');
     if (badge) {
       const bits = [];
-      if (!s.enabled) bits.push('已停用');
+      if (!app.state.settings.enabled) bits.push('已停用');
       else bits.push('运行中');
-      if (s.liveMode) bits.push('🔴 直播中');
+      if (app.state.settings.liveMode) bits.push('🔴 直播中');
       badge.textContent = bits.join(' · ');
-      badge.classList.toggle('off', !s.enabled);
-      badge.classList.toggle('live', !!s.liveMode);
+      badge.classList.toggle('off', !app.state.settings.enabled);
+      badge.classList.toggle('live', !!app.state.settings.liveMode);
     }
 
     const status = rootEl.querySelector('[data-std-dw-status]');
     if (status) {
       const lines = [];
       lines.push(`当前卡：${esc(st.card)}`);
-      lines.push(`世界书：用了 ${st.worldbooksUsed.length} 本 / 共 ${st.worldbooksAvailable} 本`);
+      lines.push(
+        src.manual
+          ? `世界书：<b>手动选择</b>了 ${src.names.length} 本${src.names.length ? `（${esc(src.names.join('、'))}）` : ''}`
+          : `世界书：自动跟随该卡绑定的 ${src.names.length} 本${src.names.length ? `（${esc(src.names.join('、'))}）` : ''}`,
+      );
       lines.push(
         st.profile
           ? `观众档案：${st.profile.data?.channelName ? `《${esc(st.profile.data.channelName)}》` : '已生成'}（${st.profile.stats.summaryChars} 字）`

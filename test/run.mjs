@@ -9,6 +9,7 @@
 
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { createMiniDocument, makeMemoryStorage } from './mini-dom.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -22,8 +23,9 @@ let failed = 0;
 const failures = [];
 
 function test(name, fn) {
-  // 每个用例开始前清掉假后端的排队响应，避免用例之间串数据
+  // 每个用例开始前清掉假后端排队的响应与酒馆侧的残留状态，避免用例之间串数据
   responseQueue.length = 0;
+  resetMockConnection();
   try {
     const r = fn();
     if (r && typeof r.then === 'function') {
@@ -173,6 +175,14 @@ function resetMockConnection() {
   MOCK_CONNECTION.openai_model = 'gpt-4o-mini';
   MOCK_CONNECTION.custom_url = '';
   MOCK_CONNECTION.reverse_proxy = '';
+}
+
+/** 复位酒馆侧的残留状态（卡绑定、全局世界书、当前卡） */
+function resetTavernState() {
+  mockContext.characters = [{ name: '测试卡', data: { extensions: { world: '' } } }];
+  mockContext.characterId = 0;
+  mockContext.extensionSettings.world_info.world_info = [];
+  mockContext.chatMetadata = { file_name: 'test-chat' };
 }
 
 /** 假后端：按顺序吐预设回复 */
@@ -1175,6 +1185,7 @@ section('13b. 扩展面板设置栏（抽屉）');
 function makeDrawerEnv() {
   const d = createMiniDocument();
   useDoc(d); // 必须让 app 通过全局拿到同一份文档，否则 app.stats() 会读错文档
+  resetTavernState(); // 卡绑定 / 全局世界书 / 当前卡 都要复位，否则用例之间互相污染
   // 清掉上一个用例留下的悬浮层，避免替身跨文档兜底查找时拿错
   const stale = d.getElementById('std-overlay');
   if (stale) stale.remove();
@@ -1430,7 +1441,7 @@ await test('换卡后世界书页会显示新卡绑定的书', () => {
   changeCard('戊卡', '大书', 11);
   openWorldTab(app, panel);
   const html = panel.el.querySelector('.std-body').innerHTML;
-  ok(/自动跟随当前卡绑定的世界书/.test(html), `应当显示跟随模式：${html.slice(0, 200)}`);
+  ok(/自动跟随当前卡/.test(html), `应当显示跟随模式：${html.slice(0, 200)}`);
   ok(html.includes('戊卡'), '应当显示当前卡名');
   ok(html.includes('大书'), '应当列出会读的世界书');
   app.destroy();
@@ -1449,6 +1460,172 @@ await test('设置栏挂上之后，世界书勾选依然只由面板负责，�
   panel.el.dispatch('change', { target: box });
   eq(app.state.settings.scan.sources.includes('大书'), true);
   app.destroy();
+});
+
+await test('世界书页列出的书可以多选，勾哪本扫描就读哪本', () => {
+  const { d, app } = makeDrawerEnv();
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  openWorldTab(app, panel);
+
+  const boxes = panel.el.querySelectorAll('[data-std-book]');
+  eq(boxes.length, 3, `应当列出全部 3 本世界书，实际 ${boxes.length}`);
+
+  // 多选两本
+  const pick = (name, on) => {
+    const box = panel.el.querySelectorAll('[data-std-book]').find((b) => b.getAttribute('data-std-book') === name);
+    box.checked = on;
+    panel.el.dispatch('change', { target: box });
+  };
+  pick('小书', true);
+  pick('大书', true);
+  const sources = app.state.settings.scan.sources;
+  eq(sources.length, 2, `应当选中 2 本，实际 ${JSON.stringify(sources)}`);
+  ok(sources.includes('小书') && sources.includes('大书'));
+  // 扫描会读的书必须和勾选一致
+  eq(app.stats().worldbooksUsed.length, 2, '扫描会读的书应当就是勾选的这些');
+  app.destroy();
+});
+
+await test('「勾选全部世界书」能一键选中所有书', () => {
+  const { d, app } = makeDrawerEnv();
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  openWorldTab(app, panel);
+
+  const btn = panel.el.querySelector('[data-std-act="books-all"]');
+  ok(btn, '应当有「勾选全部世界书」按钮');
+  panel.el.dispatch('click', { target: btn });
+
+  const sources = app.state.settings.scan.sources;
+  eq(sources.length, 3, `应当选中全部 3 本，实际 ${JSON.stringify(sources)}`);
+  eq(app.stats().worldbooksUsed.length, 3);
+  // 界面上也应当反映出来
+  const checkedInUi = panel.el.querySelectorAll('[data-std-book]').filter((b) => b.checked).length;
+  eq(checkedInUi, 3, '勾选状态应当同步到界面');
+  app.destroy();
+});
+
+await test('自动模式下取消勾选一本，只去掉那一本（其余本卡绑定的书保留）', () => {
+  const { d, app } = makeDrawerEnv();
+  // 先让这张卡绑定两本书：主书 + 全局开启的
+  mockContext.characters[0].data.extensions.world = '大书';
+  mockContext.extensionSettings.world_info.world_info = ['小书'];
+  emitTavernEvent('CHARACTER_PAGE_LOADED');
+
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  openWorldTab(app, panel);
+  eq(app.stats().worldbooksUsed.length, 2, '自动模式应当读两本');
+
+  // 取消"小书"
+  const box = panel.el.querySelectorAll('[data-std-book]').find((b) => b.getAttribute('data-std-book') === '小书');
+  box.checked = false;
+  panel.el.dispatch('change', { target: box });
+
+  const sources = app.state.settings.scan.sources;
+  eq(sources.length, 1, `应当只剩一本，实际 ${JSON.stringify(sources)}`);
+  eq(sources[0], '大书', '保留的应当是没被取消的那本');
+
+  // 复位，避免影响后续用例
+  mockContext.characters[0].data.extensions.world = '';
+  mockContext.extensionSettings.world_info.world_info = [];
+  app.destroy();
+});
+
+await test('世界书页会标出哪几本是当前卡绑定的', () => {
+  const { d, app } = makeDrawerEnv();
+  mockContext.characters[0].data.extensions.world = '大书';
+  emitTavernEvent('CHARACTER_PAGE_LOADED');
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  openWorldTab(app, panel);
+  const tagged = panel.el.querySelectorAll('.std-book-tag');
+  eq(tagged.length, 1, '只有本卡绑定的那本应当有标记');
+  ok(panel.el.innerHTML.includes('本卡绑定'));
+  mockContext.characters[0].data.extensions.world = '';
+  app.destroy();
+});
+
+await test('设置栏的状态区会说清是手动选的还是自动跟随', () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+
+  app.updateSettings({ scan: { sources: ['大书', '小书'] } });
+  drawer.render();
+  let status = el.querySelector('[data-std-dw-status]').innerHTML;
+  ok(/手动选择/.test(status), `手动模式应当写明：${status}`);
+  ok(/大书/.test(status) && /小书/.test(status), '应当列出选中的书');
+
+  app.updateSettings({ scan: { sources: null } });
+  drawer.render();
+  status = el.querySelector('[data-std-dw-status]').innerHTML;
+  ok(/自动跟随/.test(status), `自动模式应当写明：${status}`);
+  app.destroy();
+});
+
+await test('悬浮层的整层透明度由设置决定，hover / 拖动都不会覆盖它', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+  const bar = root.querySelector('.std-ov-bar');
+
+  ov.enableInteractions(d2, () => {});
+  ov.applyOverlayStyle(d2, { overlayOpacity: 0.42, fontSize: 15, speed: 110, overlayFade: true });
+  eq(root.style.getPropertyValue('--std-ov-opacity'), '0.42', '透明度应当来自设置');
+
+  // 悬停只加提示类，不得改动透明度
+  bar.dispatch('pointerenter', {});
+  ok(root.classList.contains('hover'), '悬停应当加 hover 类');
+  eq(root.style.getPropertyValue('--std-ov-opacity'), '0.42', '悬停不该改透明度');
+
+  // 拖动同理
+  root._rect = { left: 10, top: 10, width: 400, height: 100, right: 410, bottom: 110 };
+  bar.dispatch('pointerdown', { clientX: 20, clientY: 20, button: 0 });
+  ok(root.classList.contains('dragging'), '拖动中应当有 dragging 类');
+  eq(root.style.getPropertyValue('--std-ov-opacity'), '0.42', '拖动不该改透明度');
+  d2.defaultView.__emit('pointerup', {});
+  eq(root.style.getPropertyValue('--std-ov-opacity'), '0.42', '拖动结束也不该改透明度');
+});
+
+await test('样式表不再依赖 :has()（旧版 WebView 不支持）', () => {
+  // 直接检查 style.css 里没有 :has( 选择器
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  ok(!/:has\s*\(/.test(withoutComments), 'CSS 里不该再用 :has() 选择器');
+});
+
+await test('点色块能真的改弹幕框背景', () => {
+  const { d, app } = makeDrawerEnv();
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  panel.toggle(true);
+  const lookTab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'look');
+  lookTab.dispatch('click', { target: lookTab });
+
+  const swatches = panel.el.querySelectorAll('[data-std-swatch]');
+  ok(swatches.length >= 5, `应当有多个预设色块，实际 ${swatches.length}`);
+
+  const target = swatches[2];
+  const css = target.getAttribute('data-std-swatch');
+  target.dispatch('click', { target });
+  eq(app.state.settings.appearance.frameBackground, css, '点色块应当写进设置');
+  eq(app.state.settings.appearance.frameBgTouched, true, '应当标记为"用户改过"');
+  app.destroy();
+});
+
+await test('弹幕框会把背景色写进 DOM', () => {
+  const bg = 'linear-gradient(100deg, #111 0%, #222 100%)';
+  const frame = frameMod.createFrame({
+    doc,
+    appearance: { ...appearance, frameBackground: bg },
+    luminance: 0.1,
+    meta: { batchNo: 9, messageId: 1 },
+    items: [{ 昵称: '甲', 内容: 'x' }],
+  });
+  eq(frame.el.style.getPropertyValue('--std-bg'), bg, '背景应当作为 CSS 变量传下去');
 });
 
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');

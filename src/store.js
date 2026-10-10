@@ -91,6 +91,7 @@ export function defaultSettings() {
     appearance: {
       frameEnabled: true,
       frameBackground: 'linear-gradient(100deg, #2b3a67 0%, #3f5b8b 38%, #6d4f8f 68%, #8f5f7a 100%)',
+      frameBgTouched: false, // 用户是否手动改过弹幕框背景（改过就不再用"按主题取样"覆盖）
       frameHeight: 148,
       speed: 110, // px/s
       fontSize: 15,
@@ -100,7 +101,7 @@ export function defaultSettings() {
       keepStatic: true, // 播完后留下一份静态列表，方便回看
       overlayEnabled: true, // 悬浮层默认开：它浮在上面，不占正文版面
       overlayRect: { x: 0.06, y: 0.08, w: 0.88, h: 0.18 }, // 相对视口，拖动/缩放后记忆
-      overlayOpacity: 0.14, // 悬浮层整体不透明度（要能透出下面的正文）
+      overlayOpacity: 0.35, // 悬浮层整体不透明度（整层一起变，含标题栏与弹幕）
       overlayFade: true, // 每批播完自动淡出
     },
 
@@ -229,7 +230,8 @@ export function normalizeSettings(s) {
   out.appearance.frameHeight = num(out.appearance.frameHeight, 148, 48, 600);
   out.appearance.gap = num(out.appearance.gap, 16, 0, 200);
   out.appearance.opacity = clamp01(out.appearance.opacity, 1);
-  out.appearance.overlayOpacity = clamp01(out.appearance.overlayOpacity, 0.14);
+  out.appearance.overlayOpacity = num(out.appearance.overlayOpacity, 0.35, 0.02, 1);
+  out.appearance.frameBgTouched = asBool(out.appearance.frameBgTouched, false);
   out.appearance.frameEnabled = asBool(out.appearance.frameEnabled, true);
   out.appearance.overlayEnabled = asBool(out.appearance.overlayEnabled, true);
   out.appearance.showMeta = asBool(out.appearance.showMeta, true);

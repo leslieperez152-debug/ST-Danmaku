@@ -114,6 +114,9 @@ export class MiniElement {
       this.classList.set = new Set(String(v).split(/\s+/).filter(Boolean));
       this._className = [...this.classList.set].join(' ');
     }
+    // 布尔属性：浏览器里"有该属性"就等于 true，缺了它"取消勾选"这类判断会读错
+    if (k === 'checked') this._checked = true;
+    if (k === 'value') this._value = String(v);
     if (k.startsWith('data-')) {
       const key = k
         .slice(5)
@@ -127,6 +130,7 @@ export class MiniElement {
   removeAttribute(k) {
     delete this.attributes[k];
     if (k === 'id') this._id = '';
+    if (k === 'checked') this._checked = false;
   }
 
   /** 和浏览器一样：el.id = 'x' 等价于 setAttribute('id', 'x') */

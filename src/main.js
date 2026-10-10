@@ -34,6 +34,7 @@ import {
   getRecentStory,
   resolveWorldbookNames,
   listWorldbookNames,
+  getBoundWorldbooks,
   getCurrentConnection,
   setLiveInjection,
   clearLiveInjection,
@@ -43,7 +44,7 @@ import {
 import { scanWorldbooks, estimateScanCost } from './scan.js';
 import { generateBatch, buildViewerPool, buildStoryContext, pickGags } from './danmaku.js';
 import { chat, chatJson, fetchModelList, resolveStTarget } from './llm.js';
-import { buildPalette, sampleBackgroundLuminance } from './color.js';
+import { buildPalette, sampleBackgroundLuminance, sampleBackground, shade } from './color.js';
 import {
   createFrame,
   playFrame,
@@ -530,7 +531,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     if (state.busy) return { ok: false, error: '有任务在进行中' };
     state.busy = true;
     api.emit('busy', true);
-    api.emit('scan', { phase: 'start', detail: '开始扫描' });
+    api.emit('scan', { phase: 'start', detail: '开始扫描世界书' });
     try {
       const story = collectStory();
       const res = await scanWorldbooks({
@@ -538,6 +539,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         scan: state.settings.scan,
         recentText: story,
         log: (m, lv) => logLine(m, lv),
+        // 三个阶段原样透出去，面板/设置栏照着显示进度
         progress: (p) => api.emit('scan', p),
       });
       if (!res.ok) {
@@ -547,9 +549,12 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       }
       state.profile = res.profile;
       putCachedProfile(storage, currentProfileKey(), res.profile);
-      // 档案变了，旧名册不再匹配，清掉让下次重新生成
+      // 档案换了，旧名册是按旧档案起的，作废
       state.runtime.viewers = [];
       state.runtime.viewersProfileKey = '';
+      state.runtime.viewersCardName = '';
+      // 已经开着直播模式的话，把注入也按新档案刷新一遍
+      if (state.settings.liveMode) refreshInjection();
       persistRuntime();
       api.emit('profile', res.profile);
       return { ok: true, profile: res.profile };
@@ -558,6 +563,32 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       api.emit('busy', false);
       api.emit('scan', { phase: 'end', detail: '' });
     }
+  }
+
+  /**
+   * 档案是否已经生效？面板与设置栏用它给用户一个明确交代。
+   * 扫描是"扫完即生效"的：写进缓存后，下一批弹幕立刻用新档案，不需要额外点应用。
+   */
+  function describeProfileStatus() {
+    const p = state.profile;
+    if (!p) {
+      return {
+        ready: false,
+        title: '还没扫描',
+        detail: '弹幕现在会靠正文临场推断用词，没有这个世界的本土词汇。点「扫描世界书」让 AI 读一遍。',
+      };
+    }
+    const d = p.data || {};
+    const s = p.stats || {};
+    const when = p.generatedAt ? new Date(p.generatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
+    return {
+      ready: true,
+      title: d.channelName ? `《${d.channelName}》` : '档案已生成',
+      detail:
+        `已生效（${when}）：来源 ${s.books} 本 / 读 ${s.entriesRead} 条 ${s.charsRead} 字 → 档案 ${s.summaryChars} 字` +
+        (state.settings.liveMode ? '；直播模式的注入也按新档案刷新了' : '') +
+        '。下一批弹幕就会用上它，不需要再点别的。',
+    };
   }
 
   /** 生成/补足常驻观众名册 */
@@ -708,10 +739,16 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         : none
           ? '手动指定：一本都不读'
           : '自动跟随当前卡绑定的世界书';
-      return { mode, names, card: getCardName() };
+      // 卡片本身绑定的书（用来在列表里打标记）
+      const cardBooks = [];
+      const bound = getBoundWorldbooks();
+      if (bound.primary) cardBooks.push(bound.primary);
+      for (const b of bound.additional) if (!cardBooks.includes(b)) cardBooks.push(b);
+      return { mode, names, card: getCardName(), cardBooks, manual };
     },
-    /** 面板用：说清弹幕现在到底会用哪个 AI 来源 */
-    describeAiSource() {
+    /** 面板用：档案是不是已经生效（扫描即生效，这里只是给个明确交代） */
+    describeProfileStatus,
+    /** 面板用：说清弹幕现在到底会用哪个 AI 来源 */    describeAiSource() {
       const api = state.settings.api;
       if (api.route === 'direct') {
         return api.direct?.baseUrl ? `直连：${api.direct.baseUrl}` : '直连：还没填地址';
@@ -725,6 +762,29 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       if (api.sourceMode === 'auto' && !cur?.source) parts.push('（未能读到酒馆当前连接，请检查是否已选好聊天补全）');
       if (target.chat_completion_source === 'custom' && !target.custom_url) parts.push('⚠ 自定义端点没配地址');
       return parts.join('　|　');
+    },
+    /** 面板用：按当前主题给弹幕框取一个协调的背景色 */
+    sampleFrameBackground() {
+      let sampled = null;
+      try {
+        // 采样前先把面板藏起来，否则采到的是面板自己的背景
+        const panelEl = doc.getElementById('std-panel');
+        const wasHidden = panelEl?.classList?.contains('std-hidden');
+        if (panelEl && !wasHidden) panelEl.style.visibility = 'hidden';
+        try {
+          sampled = sampleBackground(doc, win);
+        } finally {
+          if (panelEl && !wasHidden) panelEl.style.visibility = '';
+        }
+      } catch {
+        sampled = null;
+      }
+      if (!sampled || !sampled.color) return '';
+      const base = sampled.color;
+      // 用主题色做一个"亮 → 深"的渐变，保证弹幕文字始终看得清
+      const css = `linear-gradient(100deg, ${shade(base, 0.28)} 0%, ${shade(base, 0.05)} 45%, ${shade(base, -0.32)} 100%)`;
+      updateSettings({ appearance: { frameBackground: css, frameBgTouched: true } });
+      return css;
     },
     /** 面板用：本次扫描大约要读多少字（让用户心里有数） */
     estimateScan() {

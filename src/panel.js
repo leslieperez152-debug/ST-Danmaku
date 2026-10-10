@@ -137,23 +137,26 @@ function pages(app) {
     {
       id: 'world',
       label: '世界书',
-      render: (s) => {
+      render: (s, ctx) => {
         const st = app.stats();
         const prof = st.profile;
         const names = app.listAllWorldbooks();
+        const src = app.describeWorldbookSource();
         const used = new Set(st.worldbooksUsed);
+        const isManual = Array.isArray(s.scan.sources);
+
         const rows = names.length
           ? names
               .map((n) => {
-                const checked = s.scan.sources ? used.has(n) : used.has(n);
-                return `<label class="std-book"><input type="checkbox" data-std-book="${esc(n)}" ${checked ? 'checked' : ''} ${
-                  s.scan.sources ? '' : 'data-std-book-auto="1"'
-                }><span>${esc(n)}</span></label>`;
+                const checked = used.has(n);
+                return `<label class="std-book${checked ? ' on' : ''}"><input type="checkbox" data-std-book="${esc(
+                  n,
+                )}" ${checked ? 'checked' : ''}><span class="std-book-name">${esc(n)}</span>${
+                  src.cardBooks.includes(n) ? '<span class="std-book-tag">本卡绑定</span>' : ''
+                }</label>`;
               })
               .join('')
-          : '<div class="std-hint">没找到任何世界书。插件会走"看正文学"路线，弹幕依然能出，只是没有本土词汇。</div>';
-
-        const auto = s.scan.sources ? '' : '<div class="std-hint">当前是自动模式：读「当前卡绑定的世界书 + 全局开启的」。勾选任意一本会自动切到手动模式。</div>';
+          : '<div class="std-hint">这本酒馆里一本世界书都没有。插件会走「看正文学」路线：弹幕依然能出，只是没有本土词汇。</div>';
 
         const stats = prof?.stats;
         const statLines = stats
@@ -164,32 +167,30 @@ function pages(app) {
               kv('档案字数', `${stats.summaryChars} 字（上限 ${fmt(s.scan.summaryCharBudget)} 字）`),
               kv('扫描时间', prof.generatedAt ? new Date(prof.generatedAt).toLocaleString('zh-CN') : '—'),
             ].join('')
-          : '<div class="std-hint">还没有档案。点下面的"扫描世界书"让 AI 读一遍，生成"这批观众是谁、用什么词"。</div>';
+          : '<div class="std-hint">还没有档案。勾好要读的世界书，点下面的「扫描世界书」让 AI 读一遍，生成"这批观众是谁、用什么词"。</div>';
+
+        const modeBanner = isManual
+          ? `<div class="std-mode manual">✍️ 手动选择：扫描只读下面<b>勾选</b>的书（已勾 ${used.size} 本）</div>`
+          : `<div class="std-mode auto">🔄 自动跟随当前卡：正在读「本卡绑定的 + 全局开启的」（${used.size} 本）<br>
+             <span class="std-dim">勾选任意一本就会切到手动模式；手动模式下手动勾选不会带到别的卡</span></div>`;
 
         return [
           '<div class="std-hint">扫描是三步走的，任何规模的世界书都不会一口气全塞给模型：<b>先索引</b>（只读条目名，几乎不花 token）→ <b>再按预算取样正文</b> → <b>最后总结成有字数上限的档案</b>。</div>',
-          '<div class="std-sec">要读哪些世界书</div>',
-          (() => {
-            const src = app.describeWorldbookSource();
-            const warn = !src.names.length
-              ? '<div class="std-warn">这张卡没有绑定任何世界书，全局也没有开启的世界书。插件仍能出弹幕，但会走「看正文学」的路线：没有本土词汇，弹幕会比较泛。</div>'
-              : '';
-            return `${kv('跟随模式', src.mode)}${kv('当前卡', src.card || '(无卡)')}${kv(
-              '实际会读',
-              src.names.length ? src.names.join('、') : '（无）',
-            )}${warn}`;
-          })(),
+          '<div class="std-sec">扫描会读哪些世界书</div>',
+          modeBanner,
+          kv('当前卡', src.card || '(无卡)'),
+          kv('本次会读', src.names.length ? src.names.join('、') : '（一本都没选）'),
           `<div class="std-books">${rows}</div>`,
-          auto,
+          btnRow([
+            { label: '勾选全部世界书', act: 'books-all' },
+            { label: '全不选', act: 'books-none' },
+            { label: '恢复自动跟随', act: 'books-auto' },
+          ]),
+          '<div class="std-hint">勾选是可以多选的：勾几本就读几本。想要「把所有世界书都读一遍」就点「勾选全部世界书」，再点下面的扫描。</div>',
           row2(
             '换卡时自动跟随',
             toggle('scan.followCard', s.scan.followCard, '开着：进哪张卡就读哪张卡绑定的世界书（手动勾选不会带到别的卡上）。关掉则保留你手动选的书'),
           ),
-          btnRow([
-            { label: '恢复自动', act: 'books-auto' },
-            { label: '全选', act: 'books-all' },
-            { label: '全不选', act: 'books-none' },
-          ]),
           sep(),
           '<div class="std-sec">预算</div>',
           row2('取样正文上限（字）', number('scan.entryCharBudget', s.scan.entryCharBudget, 0, 2000000, 1000), '这本书的总字数是上限；超出部分按优先级取舍'),
@@ -199,11 +200,16 @@ function pages(app) {
           row2('预览：本次大约会读多少字', `<span class="std-strong">${esc(app.estimateScan())}</span>`),
           sep(),
           '<div class="std-sec">扫描结果</div>',
+          app.describeProfileStatus().ready
+            ? `<div class="std-applied ok"><b>✅ ${esc(app.describeProfileStatus().title)}</b><br>${esc(app.describeProfileStatus().detail)}</div>`
+            : `<div class="std-applied none"><b>○ ${esc(app.describeProfileStatus().title)}</b><br>${esc(app.describeProfileStatus().detail)}</div>`,
+          scanProgressHtml(ctx && ctx.scanPhase),
           statLines,
           btnRow([
-            { label: '扫描世界书', act: 'scan', primary: true },
+            { label: ctx && ctx.scanPhase ? '扫描中…' : '扫描世界书', act: 'scan', primary: true },
             { label: '清空档案缓存', act: 'clear-profiles' },
           ]),
+          '<div class="std-hint">扫描是<b>扫完即生效</b>的：写进档案后下一批弹幕立刻用上，不需要再点"应用"。换回扫过的卡也会直接用回缓存。</div>',
           sep(),
           '<div class="std-sec">档案内容（可手改）</div>',
           profileEditor(prof),
@@ -252,24 +258,30 @@ function pages(app) {
         return [
           '<div class="std-sec">楼层弹幕框</div>',
           row2('启用', toggle('appearance.frameEnabled', a.frameEnabled, '挂在每轮正文下面的一块幕布')),
-          row2('背景', text('appearance.frameBackground', a.frameBackground, 'CSS 颜色或渐变')),
+          row2('背景', colorPicker(a.frameBackground), '点色块挑预设，或直接改下面的文本框（支持颜色和渐变）'),
+          row2('背景（自由填写）', text('appearance.frameBackground', a.frameBackground, 'CSS 颜色或渐变')),
           row2('高度（px）', number('appearance.frameHeight', a.frameHeight, 48, 600, 4)),
           row2('字号（px）', number('appearance.fontSize', a.fontSize, 8, 48, 1)),
           row2('速度（px/秒）', number('appearance.speed', a.speed, 20, 900, 5), '越大飞得越快'),
           row2('同轨间隔（px）', number('appearance.gap', a.gap, 0, 200, 1)),
-          row2('整体不透明度', range('appearance.opacity', a.opacity, 0.1, 1, 0.05)),
+          row2('整块不透明度', range('appearance.opacity', a.opacity, 0.1, 1, 0.05), '整块弹幕框（含幕布与文字）一起变'),
           row2('显示轨道序号', toggle('appearance.showMeta', a.showMeta)),
           row2('播完留静态列表', toggle('appearance.keepStatic', a.keepStatic, '方便往回翻看这一批弹幕')),
           sep(),
           '<div class="std-sec">悬浮弹幕层</div>',
           row2('启用', toggle('appearance.overlayEnabled', a.overlayEnabled, '飘在界面最上层，可拖动、右下角可拉伸')),
-          row2('整体透明度', range('appearance.overlayOpacity', a.overlayOpacity, 0.02, 1, 0.02), '要能透出下面的正文'),
-          row2('播完自动淡出', toggle('appearance.overlayFade', a.overlayFade)),
+          row2(
+            '整层不透明度',
+            range('appearance.overlayOpacity', a.overlayOpacity, 0.02, 1, 0.02),
+            '这一项改的是整个悬浮层（标题栏 + 弹幕）的透明度；拖动和悬停都不会覆盖它',
+          ),
+          row2('播完自动淡出', toggle('appearance.overlayFade', a.overlayFade, '每批播完后整层淡下去，不挡着看正文')),
           btnRow([
+            { label: '按当前主题取个色', act: 'sample-frame-bg' },
             { label: '重置悬浮层位置', act: 'reset-overlay-rect' },
             { label: '本地预览一批', act: 'demo' },
           ]),
-          '<div class="std-hint">悬浮层平时鼠标可以穿透，不挡你点聊天；鼠标移进去才能拖动/拉伸。位置会被记住。</div>',
+          '<div class="std-hint">悬浮层平时鼠标可以穿透，不挡你点聊天；标题栏和右下角手柄才收鼠标事件，所以拖动/拉伸不受透明度影响。位置和大小会被记住。</div>',
         ].join('');
       },
     },
@@ -341,6 +353,15 @@ const esc = (s) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+/** 三步扫描的进度条（没在扫时返回空串） */
+function scanProgressHtml(scanPhase) {
+  if (!scanPhase) return '';
+  const label = { start: '准备中', index: '① 索引条目', sample: '② 按预算取样正文', summarize: '③ 总结成观众档案' }[scanPhase.phase] || '处理中';
+  return `<div class="std-progress"><span class="std-spin"></span> ${esc(label)}${
+    scanPhase.detail ? `：${esc(scanPhase.detail)}` : ''
+  }</div>`;
+}
+
 const fmt = (n) => {
   const v = Number(n) || 0;
   if (v >= 10000) return `${(v / 10000).toFixed(1)} 万`;
@@ -388,6 +409,30 @@ const range = (path, value, min, max, step, hint) =>
     value,
   )}</span>${hint ? `<div class="std-hint">${esc(hint)}</div>` : ''}</div>`;
 
+/* 弹幕框背景预设：可点选的色块。用户挑一个就能立刻改颜色，
+   不必去手写 CSS —— 之前只给了一个文本框，等于"颜色改不了"。 */
+const FRAME_BG_PRESETS = [
+  ['深蓝紫', 'linear-gradient(100deg, #2b3a67 0%, #3f5b8b 38%, #6d4f8f 68%, #8f5f7a 100%)'],
+  ['夜空', 'linear-gradient(100deg, #0f2027 0%, #203a43 50%, #2c5364 100%)'],
+  ['落日', 'linear-gradient(100deg, #6a3093 0%, #b06ab3 45%, #ff9a76 100%)'],
+  ['青松', 'linear-gradient(100deg, #134e5e 0%, #2b8a72 55%, #71b280 100%)'],
+  ['奶油', 'linear-gradient(100deg, #f6d365 0%, #fda085 55%, #f78ca0 100%)'],
+  ['纯黑', '#0c0c12'],
+  ['墨绿', '#123a2b'],
+  ['酒红', '#4a1f27'],
+];
+
+function colorPicker(current) {
+  const swatches = FRAME_BG_PRESETS.map(
+    ([name, css]) =>
+      `<button type="button" class="std-swatch${css === current ? ' sel' : ''}" data-std-swatch="${esc(css)}" title="${esc(
+        name,
+      )}" style="background:${esc(css)}"></button>`,
+  ).join('');
+  return `<div class="std-swatches">${swatches}</div>
+    <div class="std-preview" style="background:${esc(current)}">预览：弹幕框背景</div>`;
+}
+
 function profileEditor(prof) {
   const d = prof?.data || {};
   const fields = [
@@ -423,6 +468,7 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
   let activeTab = 'home';
   let refreshTimer = null;
   let boundDoc = null; // 面板当前挂在哪个文档上
+  let scanPhase = null; // 扫描进度（null = 没在扫）
 
   const defs = pages(app);
 
@@ -514,7 +560,7 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
     const s = app.state.settings;
     [...tabEl.children].forEach((b) => b.classList.toggle('sel', b.getAttribute('data-std-tab') === activeTab));
     const def = defs.find((d) => d.id === activeTab) || defs[0];
-    bodyEl.innerHTML = def.render(s);
+    bodyEl.innerHTML = def.render(s, { scanPhase });
     updateStatus();
   }
 
@@ -545,12 +591,23 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
 
   /* 事件订阅：任何状态变化都尽量反映到面板 */
   ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'cleared', 'scan'].forEach((evt) =>
-    app.on(evt, scheduleRefresh),
+    app.on(evt, (payload) => {
+      if (evt === 'scan') scanPhase = payload && payload.phase && payload.phase !== 'end' ? payload : null;
+      scheduleRefresh();
+    }),
   );
 
   /* ───────────── 交互 ───────────── */
 
   async function onPanelClick(ev) {
+    // 色块：点一下就换弹幕框背景
+    const swatch = ev.target?.closest?.('[data-std-swatch]');
+    if (swatch) {
+      app.updateSettings({ appearance: { frameBackground: swatch.getAttribute('data-std-swatch'), frameBgTouched: true } }, { silent: true });
+      render();
+      return;
+    }
+
     const btn = ev.target?.closest?.('[data-std-act]');
     if (!btn) return;
     const act = btn.getAttribute('data-std-act');
@@ -653,9 +710,19 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
         break;
       }
       case 'reset-overlay-rect':
-        app.updateSettings({ appearance: { overlayRect: { x: 0.06, y: 0.08, w: 0.88, h: 0.2 } } });
+        app.updateSettings({ appearance: { overlayRect: { x: 0.06, y: 0.08, w: 0.88, h: 0.18 } } });
         render();
         break;
+      case 'sample-frame-bg': {
+        const css = app.sampleFrameBackground();
+        if (css) {
+          setResult('std-api-result', '✅ 已按当前主题取色，弹幕框背景已更新（开关还在，可以随时切回预设色）');
+        } else {
+          setResult('std-api-result', '没采到主题色，用上面的预设色块挑一个吧');
+        }
+        render();
+        break;
+      }
       case 'reset-settings':
         if (confirm('恢复默认设置？（档案与观众名册不受影响）')) app.resetSettings();
         render();
@@ -708,13 +775,35 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
     else updateStatus();
   }
 
-  /** 把世界书勾选写回设置（勾了任意一本 = 切到手动模式） */
+  /**
+   * 把世界书勾选写回设置。
+   *
+   * 注意自动模式下的语义：列表里预先勾上的是"当前会读的"（本卡绑定的 + 全局开启的）。
+   * 用户在这一堆上再勾/取消，意图是"在这些基础上加减"，所以不能只取"勾选框里的集合"
+   * ——那会把本卡绑定但用户没动过的书一起丢掉。
+   *   · 勾上一本全新的书 → 把"当前会读的"和这本书一起固定下来
+   *   · 取消勾选一本     → 从"当前会读的"里去掉它
+   */
   function applyBookSelection() {
-    const names = [...panelEl.querySelectorAll('[data-std-book]')]
-      .filter((n) => (typeof n.checked === 'boolean' ? n.checked : n.getAttribute('checked') !== null))
-      .map((n) => n.getAttribute('data-std-book'))
-      .filter((n) => n !== null && n !== undefined);
-    app.updateSettings({ scan: { sources: names } }, { silent: true });
+    const before = app.stats().worldbooksUsed; // 改动前实际会读的书
+    const boxes = [...panelEl.querySelectorAll('[data-std-book]')];
+    const isChecked = (n) => (typeof n.checked === 'boolean' ? n.checked : n.getAttribute('checked') !== null);
+    const nowChecked = boxes.filter(isChecked).map((n) => n.getAttribute('data-std-book')).filter((n) => n != null);
+
+    const wasManual = Array.isArray(app.state.settings.scan.sources);
+    let names;
+    if (wasManual) {
+      // 已经是手动模式：以勾选框为准
+      names = nowChecked;
+    } else {
+      // 自动模式：勾选框预勾的是"本卡绑定的书"。用户没动过的书要保留，
+      // 用户取消勾选的要去掉，新勾上的要加上。
+      const unchecked = new Set(boxes.filter((b) => !isChecked(b)).map((b) => b.getAttribute('data-std-book')));
+      const kept = before.filter((n) => !unchecked.has(n));
+      names = [...new Set([...kept, ...nowChecked])];
+    }
+
+    app.updateSettings({ scan: { sources: names } });
     render();
   }
 

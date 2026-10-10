@@ -171,18 +171,29 @@ export function buildPalette(n, opts = {}) {
  * @returns {number} 0~1，采样失败返回 0.2（深色主题的常见值）
  */
 export function sampleBackgroundLuminance(doc, win) {
-  const DEFAULT = 0.2;
+  const s = sampleBackground(doc, win);
+  return s.luminance;
+}
+
+/**
+ * 采样背景，并尽量拿到真实颜色（用于"按当前主题取色"）。
+ * @returns {{luminance:number, color:string}} color 为 '' 表示没采到
+ */
+export function sampleBackground(doc, win) {
+  const DEFAULT = { luminance: 0.2, color: '' };
   try {
     if (!doc || !doc.body) return DEFAULT;
 
-    // body 上的实色背景最准
-    const bodyBg = parseColor(win.getComputedStyle(doc.body).backgroundColor);
-    if (bodyBg) {
-      // 完全不透明的 body 背景优先级最高
-      const raw = win.getComputedStyle(doc.body).backgroundColor || '';
-      if (!/rgba\([^)]*,\s*0(\.0+)?\s*\)/.test(raw) && !/transparent/.test(raw)) {
-        return relativeLuminance(bodyBg);
-      }
+    // body / 聊天区的实色背景最准
+    const chat = doc.getElementById?.('chat');
+    for (const el of [chat, doc.body]) {
+      if (!el) continue;
+      const raw = win.getComputedStyle(el).backgroundColor || '';
+      if (/transparent/.test(raw)) continue;
+      const alpha = /rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)/.exec(raw);
+      if (alpha && Number(alpha[1]) < 0.5) continue;
+      const rgb = parseColor(raw);
+      if (rgb) return { luminance: relativeLuminance(rgb), color: toHex(rgb) };
     }
 
     const w = win.innerWidth || doc.documentElement.clientWidth || 800;
@@ -196,21 +207,30 @@ export function sampleBackgroundLuminance(doc, win) {
     ];
 
     const lums = [];
+    let color = '';
     for (const [x, y] of points) {
       const el = doc.elementFromPoint(x, y);
       if (!el) continue;
-      const lum = walkUpForBackground(el, win);
-      if (typeof lum === 'number') lums.push(lum);
+      const found = walkUpForBackground(el, win);
+      if (found) {
+        lums.push(found.luminance);
+        if (!color) color = found.color;
+      }
       if (lums.length >= 3) break;
     }
     if (!lums.length) return DEFAULT;
-    return lums.reduce((a, b) => a + b, 0) / lums.length;
+    return { luminance: lums.reduce((a, b) => a + b, 0) / lums.length, color };
   } catch {
     return DEFAULT;
   }
 }
 
-/** 从元素向上找到第一个非透明背景，返回其亮度 */
+function toHex([r, g, b]) {
+  const h = (v) => clamp255(v).toString(16).padStart(2, '0');
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+/** 从元素向上找到第一个非透明背景，返回亮度与颜色 */
 function walkUpForBackground(el, win) {
   let node = el;
   let guard = 0;
@@ -218,8 +238,18 @@ function walkUpForBackground(el, win) {
     const raw = win.getComputedStyle(node).backgroundColor || '';
     const rgb = parseColor(raw);
     const alpha = /rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)/.exec(raw);
-    if (rgb && (!alpha || Number(alpha[1]) >= 0.5)) return relativeLuminance(rgb);
+    if (rgb && (!alpha || Number(alpha[1]) >= 0.5)) {
+      return { luminance: relativeLuminance(rgb), color: toHex(rgb) };
+    }
     node = node.parentElement;
   }
   return null;
+}
+
+/** '#rrggbb' 提亮/压暗：amount > 0 变亮，< 0 变暗 */
+export function shade(hex, amount) {
+  const rgb = parseColor(hex);
+  if (!rgb) return hex;
+  const f = (c) => clamp255(amount >= 0 ? c + (255 - c) * amount : c * (1 + amount));
+  return toHex([f(rgb[0]), f(rgb[1]), f(rgb[2])]);
 }

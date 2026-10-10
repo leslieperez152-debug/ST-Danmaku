@@ -181,8 +181,11 @@
   overflow: hidden;
   /* 整个层默认穿透：永远不吃聊天区的事件 */
   pointer-events: none;
-  opacity: var(--std-ov-opacity, 0.14);
-  transition: opacity 0.4s ease;
+  /* 整体透明度：整层（含标题栏与弹幕）一起变，不会只改某一行。
+     数值完全由设置决定 —— hover / 拖动都不覆盖它（以前用 :has() 强制成 1，
+     导致"调透明度没反应"）。 */
+  opacity: var(--std-ov-opacity, 0.35);
+  transition: box-shadow 0.25s ease, outline-color 0.25s ease;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.03));
   outline: 1px dashed rgba(255, 255, 255, 0);
 }
@@ -197,11 +200,11 @@
   pointer-events: auto;
 }
 
-/* hover 或拖动时整体浮现出来，方便看清在哪 */
-#std-overlay:has(.std-ov-bar:hover),
+/* hover / 拖动时给个提示性描边，但不动透明度 */
+#std-overlay.hover,
 #std-overlay.dragging {
-  opacity: 1;
   outline-color: rgba(140, 180, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(140, 180, 255, 0.18);
 }
 
 #std-overlay.dragging {
@@ -597,9 +600,12 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 220px;
+  max-height: 260px;
   overflow: auto;
   padding: 4px 0;
+  border: 1px solid rgba(120, 160, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.14);
 }
 
 .std-book {
@@ -608,11 +614,59 @@
   gap: 7px;
   font-size: 12.5px;
   cursor: pointer;
-  padding: 2px 0;
+  padding: 3px 9px;
+  border-radius: 6px;
+}
+
+.std-book:hover {
+  background: rgba(120, 160, 255, 0.1);
+}
+
+.std-book.on {
+  background: rgba(90, 140, 255, 0.14);
 }
 
 .std-book input {
   accent-color: #5b8cff;
+  flex: none;
+}
+
+.std-book-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.std-book-tag {
+  flex: none;
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(120, 240, 200, 0.16);
+  color: #8ff0d0;
+  border: 1px solid rgba(120, 240, 200, 0.3);
+}
+
+/* 模式横幅：一眼看出现在是"自动跟随"还是"手动选择" */
+.std-mode {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  margin: 4px 0 8px;
+}
+
+.std-mode.auto {
+  background: rgba(90, 140, 255, 0.12);
+  border-left: 3px solid #5b8cff;
+  color: #cfe0ff;
+}
+
+.std-mode.manual {
+  background: rgba(120, 240, 200, 0.1);
+  border-left: 3px solid #7fe9c8;
+  color: #d6fff2;
 }
 
 /* 输入控件 */
@@ -878,6 +932,175 @@ textarea.std-input {
   word-break: break-word;
 }
 
+/* 世界书模块（就在扩展栏里，勾哪本扫描就读哪本） */
+.std-dw-sec {
+  margin: 10px 0 5px;
+  font-weight: 700;
+  font-size: 12.5px;
+  opacity: 0.9;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: 8px;
+}
+
+.std-dw-mode {
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: 5px 8px;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: rgba(90, 140, 255, 0.14);
+  border-left: 3px solid #5b8cff;
+}
+
+.std-dw-mode.manual {
+  background: rgba(120, 240, 200, 0.12);
+  border-left-color: #7fe9c8;
+}
+
+.std-dw-books {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 190px;
+  overflow: auto;
+  padding: 4px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.std-dw-book {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.std-dw-book:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.std-dw-book.on {
+  background: rgba(90, 140, 255, 0.16);
+}
+
+.std-dw-book input {
+  flex: none;
+  accent-color: #5b8cff;
+}
+
+.std-dw-book span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.std-dw-tag {
+  flex: none;
+  font-style: normal;
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(120, 240, 200, 0.18);
+  color: #8ff0d0;
+}
+
+.std-dw-empty {
+  font-size: 11.5px;
+  opacity: 0.7;
+  padding: 4px 6px;
+  line-height: 1.6;
+}
+
+.std-dw-subbtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 6px 0;
+}
+
+.std-dw-primary {
+  background: rgba(90, 140, 255, 0.28) !important;
+  border-color: rgba(160, 200, 255, 0.5) !important;
+  font-weight: 600;
+}
+
+/* 扫描进度与"已生效"反馈 */
+.std-dw-progress,
+.std-progress {
+  display: none;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 5px 9px;
+  margin: 6px 0;
+  border-radius: 6px;
+  background: rgba(90, 140, 255, 0.14);
+  border-left: 3px solid #5b8cff;
+  color: #cfe0ff;
+}
+
+.std-dw-progress.show,
+.std-progress.show {
+  display: block;
+}
+
+.std-progress {
+  display: block;
+}
+
+.std-dw-spin,
+.std-spin {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 5px;
+  border-radius: 50%;
+  border: 2px solid rgba(160, 200, 255, 0.35);
+  border-top-color: #cfe0ff;
+  animation: std-rot 0.8s linear infinite;
+  vertical-align: -1px;
+}
+
+@keyframes std-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.std-dw-applied,
+.std-applied {
+  font-size: 11.5px;
+  line-height: 1.65;
+  padding: 6px 9px;
+  margin: 6px 0;
+  border-radius: 6px;
+  word-break: break-word;
+}
+
+.std-dw-applied.ok,
+.std-applied.ok {
+  background: rgba(120, 240, 200, 0.11);
+  border-left: 3px solid #7fe9c8;
+  color: #d6fff2;
+}
+
+.std-dw-applied.none,
+.std-applied.none {
+  background: rgba(255, 200, 120, 0.09);
+  border-left: 3px solid #ffc878;
+  color: #ffe6c0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .std-dw-spin,
+  .std-spin {
+    animation: none;
+  }
+}
+
 .std-dw-tip {
   font-size: 11.5px;
   opacity: 0.6;
@@ -885,8 +1108,48 @@ textarea.std-input {
   line-height: 1.6;
 }
 
-/* ───────────── 小屏 ───────────── */
+/* 弹幕框背景色块 */
+.std-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
 
+.std-swatch {
+  width: 34px;
+  height: 22px;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.25);
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.std-swatch:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+.std-swatch.sel {
+  border-color: #a9c7ff;
+  box-shadow: 0 0 0 2px rgba(140, 180, 255, 0.35), inset 0 1px 2px rgba(255, 255, 255, 0.25);
+}
+
+.std-preview {
+  height: 34px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* 小屏 */
 @media (max-width: 700px) {
   .std-label,
   .std-kv span {

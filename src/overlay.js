@@ -208,6 +208,10 @@ export function stopOverlay(doc) {
  *     不依赖 hover 状态（第一次实现挂在 hover 上，结果经常拖不动）；
  *   · 幕布区域（.std-ov-stage）始终穿透，正文该怎么点还怎么点。
  *
+ * hover 高亮用**显式类 + 事件**实现，不用 CSS `:has()` ——
+ * 旧版 WebView 不支持 `:has()`，而且"hover 时强制 opacity:1"会把用户在面板里设的
+ * 整体透明度整个盖掉（这就是"调透明度没反应"的原因）。
+ *
  * @param {Document} doc
  * @param {(rect:object|null)=>void} onCommit 拖动/缩放结束时回调；null 表示用户点了 ✕ 隐藏
  * @returns {() => void} 卸载函数
@@ -273,11 +277,25 @@ export function enableInteractions(doc, onCommit) {
     if (typeof onCommit === 'function') onCommit(null);
   };
 
+  // hover 只加一个类，透明度由 CSS 变量决定，绝不覆盖用户设置
+  const onEnter = () => root.classList.add('hover');
+  const onLeave = () => root.classList.remove('hover');
+  if (bar.addEventListener) {
+    bar.addEventListener('pointerenter', onEnter);
+    bar.addEventListener('pointerleave', onLeave);
+    resizer.addEventListener('pointerenter', onEnter);
+    resizer.addEventListener('pointerleave', onLeave);
+  }
+
   bar.addEventListener('pointerdown', onBarDown);
   resizer.addEventListener('pointerdown', onResizeDown);
   root.addEventListener('click', onHideClick);
 
   return () => {
+    bar.removeEventListener('pointerenter', onEnter);
+    bar.removeEventListener('pointerleave', onLeave);
+    resizer.removeEventListener('pointerenter', onEnter);
+    resizer.removeEventListener('pointerleave', onLeave);
     bar.removeEventListener('pointerdown', onBarDown);
     resizer.removeEventListener('pointerdown', onResizeDown);
     root.removeEventListener('click', onHideClick);
