@@ -470,41 +470,45 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
   /** 把一批弹幕渲染到楼层框（以及可选的悬浮层） */
   /**
-   * 当前的"舞台尺寸"提示：轨道数与舞台宽度/高度。
+   * 当前的"舞台尺寸"提示：轨道数与舞台宽度。
    *
-   * 必须**在布局之后**读，否则拿到的是旧值 —— 用户把框拖小之后，
-   * 如果还用旧尺寸安排轨道，弹幕就会被裁掉（"只出现一半"）。
+   * ⚠️ **轨道数只能有一个来源。** 悬浮层和弹幕框的高度经常不一样
+   * （悬浮层拖得矮、框按设置高，或反过来）。如果两边各算各的轨道数，
+   * 数量少的那边就不得不把轨道号取模 —— 于是**不同轨道的弹幕被压回同一轨，全叠在一起**。
+   * 这就是"明明做了防重叠却还是重合"的真正原因。
+   *
+   * 所以：优先取**悬浮层**的实测尺寸（它才是观众主要看的那块）；
+   * 没开悬浮层才用弹幕框的实测尺寸；都拿不到就用设置里的框高估。
+   * 两个表面都会用这同一套轨道数。
+   *
+   * 必须**在布局之后**读，否则拿到的是旧值（拖小之后还用旧尺寸 → 弹幕被裁掉）。
    */
   function layoutHints() {
     const a = state.settings.appearance;
     const lh = Math.max(10, Math.round((Number(a.fontSize) || 15) * 1.9));
 
-    // 优先用悬浮层的实测尺寸（它才是"看得见多大"的那个）；
-    // 没开悬浮层就退到弹幕框的实测尺寸；都拿不到再用设置里的高度估。
-    const ovStage = doc.querySelector('.std-ov-stage');
-    let availH = 0;
-    let availW = 0;
-    if (ovStage && typeof ovStage.getBoundingClientRect === 'function') {
-      const r = ovStage.getBoundingClientRect();
-      if (r.height > 0) availH = r.height;
-      if (r.width > 0) availW = r.width;
+    const measure = (el) => {
+      if (!el || typeof el.getBoundingClientRect !== 'function') return { h: 0, w: 0 };
+      const r = el.getBoundingClientRect();
+      return { h: r.height > 0 ? r.height : 0, w: r.width > 0 ? r.width : 0 };
+    };
+
+    // 主表面：悬浮层优先（它是主要观看区），否则弹幕框
+    let main = { h: 0, w: 0 };
+    if (a.overlayEnabled) main = measure(doc.querySelector('.std-ov-stage'));
+    if (!main.h) {
+      const f = measure(doc.querySelector('.std-frame-stage'));
+      if (f.h) main = f;
     }
-    if (!availH) {
-      const fStage = doc.querySelector('.std-frame-stage');
-      if (fStage && typeof fStage.getBoundingClientRect === 'function') {
-        const r = fStage.getBoundingClientRect();
-        if (r.height > 0) availH = r.height;
-        if (r.width > 0) availW = r.width;
-      }
-    }
+
     // 舞台还没铺开：用设置里的框高估一个
     const frameH = Math.max(lh + 46, Number(a.frameHeight) || 148);
-    const h = availH > 0 ? availH : frameH - 40;
+    const h = main.h > 0 ? main.h : frameH - 40;
     return {
       // 至少 1 轨；高度决定能放几行
       lanes: Math.max(1, Math.floor(h / lh)),
       // 宽度至少给 320：太窄时宁可让弹幕略超出，也不要算出 0 或负数
-      stageWidth: Math.max(320, Math.round(availW) || 900),
+      stageWidth: Math.max(320, Math.round(main.w) || 900),
     };
   }
 

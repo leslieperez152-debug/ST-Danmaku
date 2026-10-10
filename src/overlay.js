@@ -10,6 +10,7 @@
  */
 
 import { speedOfItem, delayOfItem } from './danmaku.js';
+import { effectiveLanes } from './frame.js';
 
 export const OVERLAY_ID = 'std-overlay';
 
@@ -183,7 +184,11 @@ export function playOverlay(doc, items, opts = {}) {
   root.classList.remove('faded');
 
   const laneH = Math.round((Number(app.fontSize) || 15) * 1.9);
-  const lanes = Math.max(1, Math.floor(root.clientHeight / laneH));
+  // 轨道数按**舞台本身**的高度算（不含标题栏），并且**不能少于这批弹幕实际用到的轨道数** ——
+  // 少了就会把多余的轨道取模压回前面的轨道，本来分开的弹幕又叠到一起。
+  const stageH = stage.clientHeight || root.clientHeight || 160;
+  const fitLanes = Math.max(1, Math.floor(stageH / laneH));
+  const lanes = Math.max(fitLanes, effectiveLanes(items, 1));
   const baseSpeed = Math.max(20, overlaySpeedOf(app));
   const width = root.clientWidth || 800;
   // 每条用自己的速度（生成时定死），重播保持一致
@@ -192,8 +197,9 @@ export function playOverlay(doc, items, opts = {}) {
   items.forEach((item, i) => {
     const node = doc.createElement('div');
     node.className = 'std-ov-item';
-    // 轨道：优先用防重叠算法分配好的（它保证了同轨不挤在一起），没有才按序号轮着来
-    const lane = Number.isFinite(Number(item?.轨道)) ? Number(item.轨道) % lanes : i % lanes;
+    // 轨道：优先用防重叠算法分配好的（它保证了同轨不挤在一起）。
+    // 这里**不做取模** —— 取模会把不同轨道压回同一轨，那就白防了。
+    const lane = Number.isFinite(Number(item?.轨道)) && Number(item.轨道) >= 0 ? Math.floor(Number(item.轨道)) : i % lanes;
     node.style.top = `${lane * laneH}px`;
     node.style.color = item.color || '#fff';
     node.style.animationDuration = `${durationFor(item).toFixed(2)}s`;

@@ -57,7 +57,12 @@ export function createFrame({ doc, appearance, luminance, meta, items, onAction 
   const fontSize = Number(app.fontSize) || 15;
   const lineHeight = Math.round(fontSize * 1.9);
   const height = Math.max(lineHeight + 46, Number(app.frameHeight) || 148);
-  const lanes = Math.max(1, Math.floor((height - 40) / lineHeight));
+  // 行高按**这批弹幕实际用到的轨道数**算。
+  // 如果按"框能放几行"算，而计划用的轨道比它多，多出来的轨道就会被取模压回前面的轨道
+  // —— 于是本来分开的弹幕又叠到一起（这正是"防重叠了还重合"的原因）。
+  const planLanes = effectiveLanes(items, 1);
+  const fitLanes = Math.max(1, Math.floor((height - 40) / lineHeight));
+  const lanes = Math.max(planLanes, fitLanes);
 
   const colors = items.map((it) => it.color).filter(Boolean);
   const palette = colors.length === items.length ? colors : makePalette(items.length, luminance);
@@ -183,8 +188,14 @@ function buildNode(doc, item, { lane, index, lineHeight, color, showName = true 
 /**
  * 把 items 分摊到各轨道。
  *
- * 优先用**防重叠算法分配好的轨道**（`item.轨道`）—— 它算过"上一条的尾巴什么时候让开"，
- * 所以同轨不会挤在一起。没有这个字段时才退回按序号均摊（并尽量避免同轨相邻重复发送者）。
+ * 优先用**防重叠算法分配好的轨道**（`item.轨道`）—— 它算过"上一条什么时候让开"，
+ * 所以同轨不会挤在一起。
+ *
+ * ⚠️ 用它的时候**不能取模**：取模会把不同轨道压回同一轨
+ * （框 3 轨、计划 5 轨时，轨道 3→0、4→1，于是本来分开的弹幕又叠到一起）。
+ * 这正是"明明做了防重叠却还是重合"的原因。轨道号直接照用。
+ *
+ * 只有**没有** `轨道` 字段时才退回按序号均摊（并尽量避免同轨相邻重复发送者）。
  */
 export function distributeLanes(items, lanes) {
   const count = Math.max(1, lanes);
@@ -194,8 +205,8 @@ export function distributeLanes(items, lanes) {
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const preset = Number(item?.轨道);
-    if (Number.isFinite(preset)) {
-      out.push({ item, lane: ((preset % count) + count) % count, index: i });
+    if (Number.isFinite(preset) && preset >= 0) {
+      out.push({ item, lane: Math.floor(preset), index: i });
       lastSpeaker = item.昵称 || lastSpeaker;
       continue;
     }
@@ -205,6 +216,19 @@ export function distributeLanes(items, lanes) {
     lane = (lane + 1) % count;
   }
   return out;
+}
+
+/**
+ * 这批弹幕实际用到了多少条轨道（没有 `轨道` 字段时退回给定的轨道数）。
+ * 渲染时按它来算行高，保证**每一轨都有自己的位置**，不会被压回同一轨。
+ */
+export function effectiveLanes(items, fallbackLanes) {
+  let max = -1;
+  for (const it of items || []) {
+    const n = Number(it?.轨道);
+    if (Number.isFinite(n) && n >= 0) max = Math.max(max, Math.floor(n));
+  }
+  return max >= 0 ? max + 1 : Math.max(1, fallbackLanes || 1);
 }
 
 /* ───────────── 播放 ───────────── */

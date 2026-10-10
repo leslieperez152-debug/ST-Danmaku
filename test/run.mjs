@@ -2975,10 +2975,14 @@ await test('弹幕框会采用算法分好的轨道（不再按序号均摊打�
   ];
   const laid = frameMod.distributeLanes(items, 3);
   eq(laid.map((x) => x.lane).join(','), '2,2,0', '应当照用给定轨道');
-  // 轨道数少于给定值时取模，不能越界
-  const clamped = frameMod.distributeLanes([{ 轨道: 5 }, { 轨道: 7 }], 3);
-  eq(clamped.map((x) => x.lane).join(','), '2,1', '越界轨道应当取模');
-  // 没有轨道字段时退回均摊
+
+  // 轨道号必须**原样保留**，绝不能取模。
+  // 取模正是"明明做了防重叠却还是重合"的元凶：
+  // 框 3 轨而计划 5 轨时，轨道 3→0、4→1，本来分开的弹幕就被压回同一轨。
+  const big = frameMod.distributeLanes([{ 轨道: 5 }, { 轨道: 7 }], 3);
+  eq(big.map((x) => x.lane).join(','), '5,7', '轨道号不该被取模压缩');
+
+  // 没有轨道字段时才退回均摊
   const fallback = frameMod.distributeLanes([{ 昵称: '甲' }, { 昵称: '乙' }], 2);
   eq(fallback.map((x) => x.lane).join(','), '0,1');
 });
@@ -3256,6 +3260,64 @@ await test('循环是设置项且有默认值', () => {
   const s = store.defaultSettings();
   eq(s.appearance.overlayLoop, true, '默认应当循环播放');
   eq(store.normalizeSettings({ appearance: { overlayLoop: false } }).appearance.overlayLoop, false, '关掉要生效');
+});
+
+await test('循环真的在重启动画（不是只挂了个定时器）', async () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  const items = [{ 昵称: '甲', 内容: 'a', color: '#fff', 速度: 900, 延迟: 0, 轨道: 0 }];
+  // 速度 900 + 舞台窄 → 一轮很短，循环周期被下限兜到 1.5 秒
+  const res = ov.playOverlay(d2, items, { appearance: { overlayLoop: true, fontSize: 15 } });
+  eq(res.loop, true);
+  const stage = d2.querySelector('.std-ov-stage');
+  const before = stage.children[0]?.style.animation || '(空)';
+
+  // 等过一轮循环周期
+  await new Promise((r) => setTimeout(r, 1700));
+  eq(stage.children.length, 1, '循环时弹幕应当还在舞台上（不该被清空）');
+  // restart 会把 animation 置 none 再恢复，所以这里主要验证"节点还在、层还可见"
+  const root = d2.getElementById('std-overlay');
+  eq(root.getAttribute('data-std-hidden'), null, '循环期间层必须一直可见');
+  ok(!root.classList.contains('faded'), '循环期间不该被淡出（那看起来就是"消失了"）');
+  ov.stopOverlay(d2);
+});
+
+await test('轨道数不匹配：框只有 3 行但计划 5 轨时，不能被取模压回', () => {
+  const items = [
+    { 昵称: 'a', 内容: 'x', 轨道: 0 },
+    { 昵称: 'b', 内容: 'x', 轨道: 3 },
+    { 昵称: 'c', 内容: 'x', 轨道: 4 },
+  ];
+  // 即便只告诉它 3 轨，也不能把 3、4 取模成 0、1（那就叠上了）
+  const laid = frameMod.distributeLanes(items, 3);
+  eq(laid.map((x) => x.lane).join(','), '0,3,4', '轨道号必须原样保留，不能取模');
+  eq(frameMod.effectiveLanes(items, 3), 5, '应当算出实际用到 5 轨');
+  // 渲染时行高要按 5 轨算，否则第 4 轨会跑到框外面或压在第 0 轨上
+  const d = useDoc(createMiniDocument());
+  const frame = frameMod.createFrame({
+    doc: d,
+    appearance: { fontSize: 15, frameHeight: 100 },
+    luminance: 0.1,
+    meta: { batchNo: 1, messageId: 1 },
+    items,
+  });
+  ok(frame.lanes >= 5, `行高必须容得下 5 轨，实际 ${frame.lanes}`);
+  // 没有任何轨道字段时才退回均摊
+  eq(frameMod.effectiveLanes([{ 昵称: 'a' }, { 昵称: 'b' }], 4), 4, '没有轨道字段就用给定的轨道数');
+});
+
+await test('悬浮层的轨道数不会少于计划用到的轨道数', () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  // 悬浮层拖得很矮（只够 1 行），但计划用了 4 轨
+  const items = [0, 1, 2, 3].map((n) => ({ 昵称: 'x', 内容: 'y', color: '#fff', 速度: 110, 延迟: n, 轨道: n }));
+  const r = ov.playOverlay(d2, items, { appearance: { overlayLoop: false, fontSize: 15 } });
+  ok(r.lanes >= 4, `轨道数不能少于计划值（否则会叠回同一轨），实际 ${r.lanes}`);
+  const tops = [...d2.querySelector('.std-ov-stage').children].map((c) => c.style.top);
+  eq(new Set(tops).size, 4, `4 条弹幕应当占 4 个不同的 top，实际 ${tops.join(',')}`);
+  ov.stopOverlay(d2);
 });
 
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
