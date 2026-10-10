@@ -2489,6 +2489,37 @@ await test('出弹幕时内部出错也不会抛给调用方', async () => {
   app.destroy();
 });
 
+await test('提示词尾部把 JSON 键名写死（结构化输出关闭时也能正确解析）', () => {
+  const profTail = scan.profileUserPrompt({
+    outline: 'x',
+    sample: 'y',
+    stats: { books: 1, entriesTotal: 1, charsTotal: 10, entriesRead: 1, charsRead: 10, summaryBudget: 800 },
+  });
+  for (const k of ['worldName', 'stage', 'factions', 'naming', 'lexicon', 'manner', 'interests', 'channelName', 'hasWorldbook', 'voiceNote']) {
+    ok(profTail.includes(`"${k}"`), `档案提示词尾部应当列出键名 ${k}`);
+  }
+  ok(/只输出一个 JSON 对象/.test(profTail), '应当明确只输出 JSON');
+  ok(/不要加代码围栏/.test(profTail), '应当禁止代码围栏');
+
+  const styleTail = scan.styleBookUserPrompt({ lines: ['甲'], bookName: '书', want: 24, mode: 'auto' });
+  ok(styleTail.includes('"语料"') && styleTail.includes('"内容"') && styleTail.includes('"来源"') && styleTail.includes('"说明"'), '语料提示词尾部应当列出键名');
+  ok(/只能是 "原文" 或 "新写"/.test(styleTail), '应当把"来源"的取值写死');
+
+  const viewerTail = danmaku.viewerUserPrompt({ profile: null, poolSize: 10, existing: [] });
+  ok(viewerTail.includes('"观众"') && viewerTail.includes('"昵称"') && viewerTail.includes('"立场"') && viewerTail.includes('"口癖"') && viewerTail.includes('"类型"'), '名册提示词尾部应当列出键名');
+  ok(/正好 10 个/.test(viewerTail), '应当把数量写进尾部');
+
+  const batchTail = danmaku.batchUserPrompt({ profile: null, story: '', viewers: [], count: 15, fourthWall: 0 });
+  ok(batchTail.includes('"弹幕"') && batchTail.includes('"昵称"') && batchTail.includes('"内容"') && batchTail.includes('"类型"') && batchTail.includes('"回复"'), '弹幕提示词尾部应当列出键名');
+});
+
+await test('语料提示词里"本次要求"只出现一次（不要重复）', () => {
+  for (const mode of ['auto', 'generate', 'extract']) {
+    const t = scan.styleBookUserPrompt({ lines: ['甲'], bookName: '书', want: 5, mode });
+    eq((t.match(/本次要求/g) || []).length, 1, `${mode} 模式里"本次要求"应当只出现一次：${t.slice(0, 120)}`);
+  }
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

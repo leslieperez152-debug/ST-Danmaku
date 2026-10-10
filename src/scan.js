@@ -194,7 +194,16 @@ export function profileUserPrompt({ outline, sample, stats }) {
     parts.push('   B 类仍然要尽量给（可以是很通用的中文口语腔调），但**不要发明具体的专有名词**。');
     parts.push('');
   }
-  parts.push(`请输出观众档案 JSON，所有字段加起来不要超过 ${stats.summaryBudget} 字。`);
+  // 尾部必须把 JSON 的键名列全：结构化输出默认是关的（很多端点不支持），
+  // 只说"输出 JSON"的话模型会自己猜键名，猜错就解析不了。
+  parts.push('【输出格式】只输出一个 JSON 对象，键名必须完全用下面这些，不要多也不要少：');
+  parts.push('{');
+  parts.push('  "worldName": "", "stage": "", "factions": "",');
+  parts.push('  "naming": "", "lexicon": "", "manner": "", "interests": "", "channelName": "",');
+  parts.push('  "hasWorldbook": true, "voiceNote": ""');
+  parts.push('}');
+  parts.push('（hasWorldbook 是布尔值；其余都是字符串。）');
+  parts.push(`所有字符串加起来不要超过 ${stats.summaryBudget} 字。不要输出任何解释文字、不要加代码围栏。`);
   return parts.join('\n');
 }
 
@@ -311,17 +320,23 @@ export function styleBookUserPrompt({ lines, bookName, want, mode }) {
   const parts = [];
   const modeHint =
     mode === 'extract'
-      ? '本次要求：**只从素材里挑现成的句子**，尽量少改动，挑不出够多就少给几条。'
+      ? '只从素材里挑现成的句子，尽量少改动，挑不出够多就少给几条。'
       : mode === 'generate'
-        ? '本次要求：**主要靠你自己写**，素材只提供用词、称呼、行话与氛围；不要大量照抄原句。'
-        : '本次要求：素材里有像弹幕的就采用原文，其余照着素材的用词与逻辑自己写。';
+        ? '主要靠你自己写；素材只提供用词、称呼、行话与氛围，不要大量照抄原句。'
+        : '素材里有像弹幕的就采用原文，其余照着素材的用词与逻辑自己写。';
   parts.push(`【素材来源】《${bookName}》`);
   parts.push(`【本次要求】${modeHint}`);
   parts.push('');
   parts.push('【素材（可能是设定资料、人物介绍、剧情，也可能已经是弹幕清单）】');
   parts.push(lines.slice(0, 500).map((l) => `· ${l}`).join('\n'));
   parts.push('');
-  parts.push(`请产出最多 ${want} 条弹幕语料，并带上"来源"（原文 / 新写）。`);
+  // 同样：结构化输出默认关，尾部要把键名与取值写死
+  parts.push('【输出格式】只输出一个 JSON 对象，键名必须完全一致：');
+  parts.push('{"语料":[{"内容":"一条弹幕","来源":"原文","说明":""}]}');
+  parts.push(`· "语料" 是最多 ${want} 条的数组；`);
+  parts.push('· "来源" 只能是 "原文" 或 "新写" 两个值之一（原文=照抄素材里的句子，新写=你自己写的）；');
+  parts.push('· "说明" 一句话讲这条用到了素材里的什么，可以留空字符串。');
+  parts.push('不要输出任何解释文字、不要加代码围栏。');
   return parts.join('\n');
 }
 

@@ -57,7 +57,11 @@ export function viewerUserPrompt({ profile, poolSize, existing }) {
     parts.push('');
   }
   parts.push(`请设计 ${poolSize} 位常驻观众。`);
-  parts.push('JSON 格式：{"观众":[{"昵称":"","立场":"","口癖":"","类型":""}]}');
+  parts.push('【输出格式】只输出一个 JSON 对象，键名必须完全一致：');
+  parts.push('{"观众":[{"昵称":"","立场":"","口癖":"","类型":""}]}');
+  parts.push('· "观众" 是数组，正好 ' + poolSize + ' 个元素；');
+  parts.push('· "类型" 只能从这些里选一个：铁粉 / 黑子 / 路人 / 懂王 / 嗑CP / 挑刺 / 看脸 / 操碎心。');
+  parts.push('不要输出任何解释文字、不要加代码围栏。');
   return parts.join('\n');
 }
 
