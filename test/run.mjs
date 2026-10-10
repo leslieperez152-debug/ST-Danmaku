@@ -2897,38 +2897,76 @@ function seeded(seed) {
 /** 按参数算"同轨两条之间至少要隔多久"（与实现同一口径：向上取整到毫秒） */
 const needSec = (avgWidth, gapPx, speed) => Math.ceil(((avgWidth + gapPx) / speed) * 1000) / 1000;
 
-await test('防重叠：同轨任意两条之间都留够了"尾巴让开"的时间', () => {
-  const items = Array.from({ length: 20 }, (_, i) => ({ 内容: `第${i}条弹幕` }));
+await test('防重叠：同轨每两条之间都留够了"上一条自己那条尾巴"让开的时间', () => {
+  // 故意混长短：短句与超长句同批，这正是"同一行收尾会重叠"的触发条件
+  const texts = [
+    '就这？',
+    '他左手那个缠丝手用得不对，第三式明显慢下来了，是不是旧伤没好',
+    '来了来了',
+    '这剑法不对吧，他右手一直没动',
+    '6',
+    '第三式怎么慢下来了，刚那一下明显卡了一拍',
+  ];
+  const items = Array.from({ length: 18 }, (_, i) => ({ 内容: texts[i % texts.length], 昵称: `观众${i % 5}` }));
   const speed = 110;
-  const gapPx = 16;
+  const gapPx = 20;
+  const fontSize = 15;
+  const textPadPx = 8;
   const out = danmaku.assignLanesAndDelays(items, {
     base: 0.22,
     jitterPct: 60,
     lanes: 3,
     speed,
-    stageWidth: 900,
+    fontSize,
     gapPx,
+    textPadPx,
+    speedVarPct: 5,
     rand: seeded(11),
   });
 
-  eq(out.length, 20, '每条都要有结果');
+  eq(out.length, 18, '每条都要有结果');
+
+  // 按轨道收好（连同各自的估宽）
   const byLane = new Map();
   for (const it of out) {
     ok(Number.isFinite(it.延迟) && it.延迟 >= 0, `时刻必须是非负数：${it.延迟}`);
-    ok(Number.isInteger(it.轨道) && it.轨道 >= 0 && it.轨道 < 3, `轨道必须在 0~2 之间：${it.轨道}`);
+    ok(Number.isInteger(it.轨道) && it.轨道 >= 0 && it.轨道 < 3, `轨道必须在 0~2：${it.轨道}`);
+    ok(it.估宽 > 0, `每条都要有估宽：${JSON.stringify(it)}`);
     if (!byLane.has(it.轨道)) byLane.set(it.轨道, []);
-    byLane.get(it.轨道).push(it.延迟);
+    byLane.get(it.轨道).push(it);
   }
 
-  // 默认平均宽度估 200px → 需要 (200+16)/110 ≈ 1.96s
-  const need = needSec(200, gapPx, speed);
-  for (const [lane, ts] of byLane) {
-    ts.sort((a, b) => a - b);
-    for (let i = 1; i < ts.length; i += 1) {
-      const gap = ts[i] - ts[i - 1];
-      ok(gap >= need - 1e-6, `轨道 ${lane} 上有两条挨太近（会重叠）：${gap.toFixed(3)}s < ${need.toFixed(3)}s`);
+  for (const [lane, list] of byLane) {
+    list.sort((a, b) => a.延迟 - b.延迟);
+    for (let i = 1; i < list.length; i += 1) {
+      const prev = list[i - 1];
+      const cur = list[i];
+      const gap = cur.延迟 - prev.延迟;
+      // 需要让开的是**前一条自己的宽度**（不是平均值）
+      const need = Math.ceil((((prev.估宽 + gapPx) / speed) * 1000)) / 1000;
+      ok(
+        gap >= need - 1e-6,
+        `轨道 ${lane} 上一条 ${prev.估宽}px 的弹幕只让开了 ${gap.toFixed(3)}s（需要 ${need.toFixed(3)}s）` +
+          `｜前一条：${prev.内容.slice(0, 12)}｜后一条：${cur.内容.slice(0, 12)}`,
+      );
     }
   }
+});
+
+await test('长弹幕必须比短弹幕让开更久（按条估宽，不是取平均）', () => {
+  const short = { 内容: '就这？', 昵称: '甲' };
+  const long = { 内容: '他左手那个缠丝手用得不对，第三式明显慢下来了，是不是旧伤没好', 昵称: '甲' };
+  const ws = danmaku.estimateWidth(short, 15, 8);
+  const wl = danmaku.estimateWidth(long, 15, 8);
+  ok(wl > ws * 3, `长弹幕的估宽应当远大于短弹幕：${ws} vs ${wl}`);
+
+  // 同样两批，长的那批应当排得更开
+  const mk = (text) => Array.from({ length: 6 }, () => ({ 内容: text, 昵称: '甲' }));
+  const opts = { base: 0.22, jitterPct: 0, lanes: 1, speed: 110, fontSize: 15, gapPx: 20, rand: seeded(2) };
+  const a = danmaku.assignLanesAndDelays(mk('就这？'), opts);
+  const b = danmaku.assignLanesAndDelays(mk(long.内容), opts);
+  const lastOf = (x) => Math.max(...x.map((i) => i.延迟));
+  ok(lastOf(b) > lastOf(a), `长弹幕那一批应当收尾更晚：${lastOf(a)} vs ${lastOf(b)}`);
 });
 
 await test('防重叠：轨道数越多，弹幕摊得越开（不会挤在一条上）', () => {
@@ -3317,6 +3355,134 @@ await test('悬浮层的轨道数不会少于计划用到的轨道数', () => {
   ok(r.lanes >= 4, `轨道数不能少于计划值（否则会叠回同一轨），实际 ${r.lanes}`);
   const tops = [...d2.querySelector('.std-ov-stage').children].map((c) => c.style.top);
   eq(new Set(tops).size, 4, `4 条弹幕应当占 4 个不同的 top，实际 ${tops.join(',')}`);
+  ov.stopOverlay(d2);
+});
+
+/* ───────────── 每张卡独立 / 循环时序 ───────────── */
+
+section('13l. 每张卡独立（运行时数据分桶）');
+
+await test('每张卡独立：在 A 卡出的弹幕不会出现在 B 卡', () => {
+  const storage = makeMemoryStorage();
+  const cardA = '甲卡 | chat-a';
+  const cardB = '乙卡 | chat-b';
+
+  const a = store.createRuntime();
+  a.batchNo = 3;
+  a.history = [{ batchNo: 1, items: [{ 内容: '甲卡的弹幕' }] }];
+  a.viewers = [{ 昵称: '甲卡观众' }];
+  store.saveRuntime(storage, a, 10, cardA);
+
+  // B 卡此时应当是空的
+  const b = store.loadRuntime(storage, cardB, 10);
+  eq(b.history.length, 0, 'B 卡不该看到 A 卡的弹幕');
+  eq(b.viewers.length, 0, 'B 卡不该看到 A 卡的名册');
+  eq(b.batchNo, 0, 'B 卡的批次号应当从 0 开始');
+
+  // A 卡自己的还在
+  const back = store.loadRuntime(storage, cardA, 10);
+  eq(back.history.length, 1, 'A 卡的弹幕应当还在');
+  eq(back.history[0].items[0].内容, '甲卡的弹幕');
+  eq(back.viewers.length, 1);
+  eq(back.batchNo, 3);
+});
+
+await test('每张卡独立：进出多张卡来回切换，各卡都保住自己的东西', () => {
+  const storage = makeMemoryStorage();
+  const cards = ['甲卡 | c1', '乙卡 | c2', '丙卡 | c3'];
+  // 每张卡各存一份不同的历史
+  cards.forEach((key, i) => {
+    const rt = store.createRuntime();
+    rt.batchNo = i + 1;
+    rt.history = [{ batchNo: i + 1, items: [{ 内容: `第${i + 1}张卡的弹幕` }] }];
+    store.saveRuntime(storage, rt, 10, key);
+  });
+  // 再逐个读回，确认互不污染
+  cards.forEach((key, i) => {
+    const rt = store.loadRuntime(storage, key, 10);
+    eq(rt.history.length, 1, `${key} 应当有 1 批`);
+    eq(rt.history[0].items[0].内容, `第${i + 1}张卡的弹幕`, `${key} 的内容应当是自己的`);
+    eq(rt.batchNo, i + 1, `${key} 的批次号应当是自己那个`);
+  });
+});
+
+await test('每张卡独立：旧版"全局一份"的数据会被迁移进当前卡，不会丢', () => {
+  const storage = makeMemoryStorage();
+  const legacyKey = `${store._internal.NS}:runtime:v1`;
+  // 模拟旧结构：没有 scopes 字段
+  storage.setItem(
+    legacyKey,
+    JSON.stringify({
+      batchNo: 7,
+      roundNo: 2,
+      viewers: [{ 昵称: '老观众' }],
+      history: [{ batchNo: 7, items: [{ 内容: '旧版留下的弹幕' }] }],
+      lastInjection: '旧的注入',
+    }),
+  );
+
+  const rt = store.loadRuntime(storage, '某卡 | 某聊天', 10);
+  eq(rt.batchNo, 7, '旧数据应当被读出来（不能因为改了结构就丢掉）');
+  eq(rt.history.length, 1);
+  eq(rt.history[0].items[0].内容, '旧版留下的弹幕');
+
+  // 写回一次之后，旧数据应当被收进 scopes 里
+  store.saveRuntime(storage, rt, 10, '某卡 | 某聊天');
+  const raw = JSON.parse(storage.getItem(legacyKey));
+  ok(raw.scopes && typeof raw.scopes === 'object', '写回后应当是分桶结构');
+  ok(raw.scopes['某卡 | 某聊天'], '当前卡应当有自己那一桶');
+  eq(store.loadRuntime(storage, '某卡 | 某聊天', 10).history.length, 1);
+});
+
+await test('每张卡独立：作用域太多时按"最近用过"清理，不会撑爆存储', () => {
+  const storage = makeMemoryStorage();
+  const max = store._internal.SCOPE_KEEP;
+  // 存超过上限的卡
+  for (let i = 0; i < max + 5; i += 1) {
+    const rt = store.createRuntime();
+    rt.batchNo = i;
+    rt.history = [{ batchNo: i, items: [{ 内容: `卡${i}` }] }];
+    store.saveRuntime(storage, rt, 10, `卡${i} | chat`);
+  }
+  const raw = JSON.parse(storage.getItem(`${store._internal.NS}:runtime:v1`));
+  const keys = Object.keys(raw.scopes);
+  ok(keys.length <= max, `应当只保留最近 ${max} 个作用域，实际 ${keys.length}`);
+  // 最后写的那张一定还在
+  ok(keys.includes(`卡${max + 4} | chat`), '最近用过的卡必须保留');
+  ok(!keys.includes('卡0 | chat'), '最早的那张应当被清理掉');
+});
+
+await test('每张卡独立：清空只影响当前卡', () => {
+  const storage = makeMemoryStorage();
+  const a = store.createRuntime();
+  a.history = [{ batchNo: 1, items: [] }];
+  store.saveRuntime(storage, a, 10, '甲 | c1');
+  const b = store.createRuntime();
+  b.history = [{ batchNo: 1, items: [] }];
+  store.saveRuntime(storage, b, 10, '乙 | c2');
+
+  store.clearRuntimeScope(storage, '甲 | c1');
+  eq(store.loadRuntime(storage, '甲 | c1', 10).history.length, 0, '甲卡应当被清空');
+  eq(store.loadRuntime(storage, '乙 | c2', 10).history.length, 1, '乙卡不该受影响');
+});
+
+await test('循环重启时会把"时长/延时"贴回去（否则第二轮全挤在一起同时出现）', () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  const items = [
+    { 昵称: '甲', 内容: 'a', color: '#fff', 速度: 110, 延迟: 0, 轨道: 0 },
+    { 昵称: '乙', 内容: 'b', color: '#fff', 速度: 110, 延迟: 0.4, 轨道: 1 },
+  ];
+  ov.playOverlay(d2, items, { appearance: { overlayLoop: true, fontSize: 15 } });
+  const stage = d2.querySelector('.std-ov-stage');
+  const nodes = [...stage.children];
+  // 播放时记下了每条的时长/延时
+  ok(nodes[0].__stdTiming, '节点上应当记着时长与延时');
+  eq(nodes[0].__stdTiming.delay, 0, '第一条的延时应当记下来');
+  eq(nodes[1].__stdTiming.delay, 0.4, '第二条的延时应当记下来（不能丢）');
+  ok(nodes[0].__stdTiming.dur > 0, '时长应当记下来');
+  ok(nodes[1].style.animationDelay.includes('0.4'), `延时应当写进内联样式，实际 ${nodes[1].style.animationDelay}`);
   ov.stopOverlay(d2);
 });
 

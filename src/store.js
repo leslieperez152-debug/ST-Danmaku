@@ -426,56 +426,139 @@ export function createRuntime() {
   };
 }
 
-export function loadRuntime(storage) {
+/**
+ * 把一份运行时数据归一化（读盘 / 换卡时都用它兜底）。
+ */
+function normalizeRuntime(raw) {
+  const rt = createRuntime();
+  if (!raw || typeof raw !== 'object') return rt;
+  rt.batchNo = num(raw.batchNo, 0, 0, 1e9);
+  rt.roundNo = num(raw.roundNo, 0, 0, 1e9);
+  rt.viewers = Array.isArray(raw.viewers) ? raw.viewers : [];
+  rt.viewersProfileKey = String(raw.viewersProfileKey || '');
+  rt.viewersCardName = String(raw.viewersCardName || '');
+  rt.history = Array.isArray(raw.history) ? raw.history : [];
+  rt.lastInjection = String(raw.lastInjection || '');
+  return rt;
+}
+
+/** 一张卡（一个聊天）存多久没动就丢掉它的历史 */
+const SCOPE_KEEP = 12;
+
+/**
+ * 作用域的"最后用到"序号。
+ *
+ * 用单调递增的序号而不是单纯 `Date.now()`：同一毫秒内连存好几张卡时时间戳会并列，
+ * 排序就不稳定，剪枝会漏掉本该丢的那个（也可能误删刚用过的）。
+ * 序号单独存在根上，跨调用递增。
+ */
+let scopeSeq = 0;
+
+/**
+ * 读取**某个作用域**的运行时数据。
+ *
+ * 为什么需要按作用域分桶：弹幕历史与观众名册必须**每张卡独立** ——
+ * 进另一张卡时不该看到上一张卡的弹幕。以前这些是全局一份，
+ * 换卡之后再回来，前一张卡的东西还在（用户看到的就是这个现象）。
+ *
+ * 第一版是"单条记录"，所以这里要能**迁移**旧数据：
+ * 如果读到的是没有 `scopes` 字段的旧结构，就把它归到传入的 scopeKey 下。
+ *
+ * @param {Storage} storage
+ * @param {string} [scopeKey] 作用域键（一般用卡名+聊天）
+ * @param {string} [historyKeep]
+ */
+export function loadRuntime(storage, scopeKey, historyKeep) {
+  const key = String(scopeKey || '(默认)');
+  const keep = Math.max(1, Math.floor(historyKeep || 10));
   try {
     const raw = JSON.parse(storage.getItem(K_RUNTIME) || 'null');
     if (!raw || typeof raw !== 'object') return createRuntime();
-    const rt = createRuntime();
-    rt.batchNo = num(raw.batchNo, 0, 0, 1e9);
-    rt.roundNo = num(raw.roundNo, 0, 0, 1e9);
-    rt.viewers = Array.isArray(raw.viewers) ? raw.viewers : [];
-    rt.viewersProfileKey = String(raw.viewersProfileKey || '');
-    rt.viewersCardName = String(raw.viewersCardName || '');
-    rt.history = Array.isArray(raw.history) ? raw.history : [];
-    rt.lastInjection = String(raw.lastInjection || '');
-    return rt;
+
+    // 旧结构迁移：没有 scopes 就是"全局一份"的老数据，归到当前作用域
+    if (!raw.scopes || typeof raw.scopes !== 'object') {
+      return normalizeRuntime(raw);
+    }
+    return normalizeRuntime(raw.scopes[key]);
   } catch {
     return createRuntime();
   }
 }
 
-export function saveRuntime(storage, rt, historyKeep) {
+/** 把当前作用域的运行时写回去，并顺手清理太久没用到的其它作用域 */
+export function saveRuntime(storage, rt, historyKeep, scopeKey) {
+  const key = String(scopeKey || '(默认)');
+  const keep = Math.max(1, Math.floor(historyKeep || 10));
+  const pack = (r, withHistory) => ({
+    batchNo: r.batchNo,
+    roundNo: r.roundNo,
+    viewers: r.viewers,
+    viewersProfileKey: r.viewersProfileKey,
+    viewersCardName: r.viewersCardName || '',
+    history: withHistory ? (r.history || []).slice(-keep) : [],
+    lastInjection: r.lastInjection || '',
+    at: Date.now(),
+  });
+
+  // 读出已有的所有作用域（兼容旧结构），并接上序号基线
+  let scopes = {};
+  let seq = scopeSeq;
   try {
-    const keep = Math.max(1, Math.floor(historyKeep || 10));
-    const payload = {
-      batchNo: rt.batchNo,
-      roundNo: rt.roundNo,
-      viewers: rt.viewers,
-      viewersProfileKey: rt.viewersProfileKey,
-      viewersCardName: rt.viewersCardName || '',
-      history: rt.history.slice(-keep),
-      lastInjection: rt.lastInjection || '',
-    };
-    storage.setItem(K_RUNTIME, JSON.stringify(payload));
+    const raw = JSON.parse(storage.getItem(K_RUNTIME) || 'null');
+    if (raw && typeof raw === 'object') {
+      if (raw.scopes && typeof raw.scopes === 'object') {
+        scopes = raw.scopes;
+        for (const k of Object.keys(scopes)) seq = Math.max(seq, num(scopes[k]?.seq, 0, 0, 1e15));
+      } else {
+        scopes[key] = raw; // 旧数据：先把它收进 scopes
+      }
+    }
+  } catch {
+    scopes = {};
+  }
+  seq += 1;
+  scopeSeq = seq;
+  scopes[key] = { ...pack(rt, true), seq };
+
+  // 清理：只保留最近用到的若干个作用域，避免 localStorage 越来越胖
+  const keys = Object.keys(scopes);
+  if (keys.length > SCOPE_KEEP) {
+    keys
+      .sort((a, b) => num(scopes[b]?.seq, 0, 0, 1e15) - num(scopes[a]?.seq, 0, 0, 1e15))
+      .slice(SCOPE_KEEP)
+      .forEach((k) => delete scopes[k]);
+  }
+
+  try {
+    storage.setItem(K_RUNTIME, JSON.stringify({ v: 2, scopes }));
     return true;
   } catch {
     // 超配额时退化成"只存名册"，历史丢了不影响功能
     try {
-      storage.setItem(
-        K_RUNTIME,
-        JSON.stringify({
-          batchNo: rt.batchNo,
-          roundNo: rt.roundNo,
-          viewers: rt.viewers,
-          viewersProfileKey: rt.viewersProfileKey,
-          viewersCardName: rt.viewersCardName || '',
-          history: [],
-        }),
-      );
+      scopes[key] = { ...pack(rt, false), seq };
+      storage.setItem(K_RUNTIME, JSON.stringify({ v: 2, scopes }));
       return true;
     } catch {
       return false;
     }
+  }
+}
+
+/** 丢掉某个作用域的历史（"清空当前卡的弹幕"用） */
+export function clearRuntimeScope(storage, scopeKey) {
+  const key = String(scopeKey || '(默认)');
+  try {
+    const raw = JSON.parse(storage.getItem(K_RUNTIME) || 'null');
+    if (!raw || typeof raw !== 'object') return true;
+    if (raw.scopes && typeof raw.scopes === 'object') {
+      delete raw.scopes[key];
+      storage.setItem(K_RUNTIME, JSON.stringify(raw));
+    } else {
+      storage.removeItem(K_RUNTIME);
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -487,4 +570,4 @@ export function pushHistory(rt, batch, keep) {
 }
 
 /* 供测试与外部使用 */
-export const _internal = { NS, K_SETTINGS, K_PROFILE, K_RUNTIME, PROFILE_CACHE_MAX };
+export const _internal = { NS, K_SETTINGS, K_PROFILE, K_RUNTIME, PROFILE_CACHE_MAX, SCOPE_KEEP };

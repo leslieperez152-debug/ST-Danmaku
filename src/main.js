@@ -85,7 +85,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     doc,
     win,
     settings: loadSettings(storage),
-    runtime: loadRuntime(storage),
+    runtime: createRuntime(), // 初值先给空；init 里按当前作用域读盘
     profile: null,
     luminance: 0.2,
     busy: false,
@@ -116,6 +116,9 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
     state.profile = loadCurrentProfile();
     state.cardSig = cardSignature();
+
+    // 按当前作用域读回**这张卡自己的**历史与名册
+    state.runtime = loadRuntime(storage, runtimeScope(), state.settings.historyKeep);
 
     // 世界书清单要主动去问酒馆（getContext 不暴露这个数组）。
     // 注意：Tauri IPC 有可能在扩展刚加载时还没就绪，所以失败要**重试几次** ——
@@ -204,7 +207,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
   function onChatChanged() {
     purgeVisuals();
-    state.runtime = loadRuntime(storage);
+    // 按当前作用域读回**这张卡自己的**历史与名册（每张卡独立，不串味）
+    state.runtime = loadRuntime(storage, runtimeScope(), state.settings.historyKeep);
     state.profile = loadCurrentProfile();
     state.cardSig = cardSignature();
     // 换聊天时，名册属于上一张卡就作废
@@ -241,7 +245,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     }
 
     state.profile = loadCurrentProfile();
-    state.runtime = loadRuntime(storage);
+    // 换卡：按新作用域读回新卡自己的历史与名册（旧卡的数据留在它自己的桶里）
+    state.runtime = loadRuntime(storage, runtimeScope(), state.settings.historyKeep);
 
     // 观众名册是按上一张卡的世界观起的，换卡必须重做
     if (state.runtime.viewersCardName && state.runtime.viewersCardName !== nextCard) {
@@ -268,6 +273,17 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
   }
 
   /* ───────────── 档案 ───────────── */
+
+  /**
+   * 运行时数据（弹幕历史、观众名册）的**作用域键**。
+   *
+   * 用「卡 + 聊天」而不是 `currentProfileKey`：后者含世界书签名，
+   * 重选一次世界书就会换键，历史与名册就白丢了。
+   * 弹幕历史属于"这张卡的这一次聊天"，与读了哪几本世界书无关。
+   */
+  function runtimeScope() {
+    return [getCardName() || '(无卡)', getChatId() || '(无聊天)'].join(' | ');
+  }
 
   function currentProfileKey() {
     const names = resolveWorldbookNames(state.settings.scan.sources);
@@ -370,6 +386,9 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
           jitterPct: s.appearance.delayVariance,
           speed: s.appearance.speed,
           gapPx: s.appearance.gap,
+          // 逐条估宽要用字号；余量给字重与估算误差
+          fontSize: s.appearance.fontSize,
+          textPadPx: 8,
           // 同轨会被统一到同一个速度（否则快的会追上慢的并叠上）
           speedVarPct: s.appearance.speedVariance,
         });
@@ -587,8 +606,9 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       jitterPct: a.delayVariance,
       lanes: hints.lanes,
       speed: a.speed,
-      stageWidth: hints.stageWidth,
       gapPx: a.gap,
+      fontSize: a.fontSize,
+      textPadPx: 8,
       speedVarPct: a.speedVariance,
     });
     // 就地替换，保持 batch.items 的引用不变（frame / overlay 拿的是同一个数组）
@@ -868,7 +888,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
   }
 
   function persistRuntime() {
-    saveRuntime(storage, state.runtime, state.settings.historyKeep);
+    // 按作用域写回：每张卡各存一份，互不影响
+    saveRuntime(storage, state.runtime, state.settings.historyKeep, runtimeScope());
   }
 
   function updateSettings(patch, { silent = false } = {}) {

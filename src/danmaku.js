@@ -628,16 +628,55 @@ export function buildStoryContext(messages, { rounds = 2, charBudget = 6000 } = 
  * @returns {object[]} 带 `延迟` 与 `轨道` 的新数组
  */
 /**
+ * 估算一条弹幕在屏幕上的宽度（px）。
+ *
+ * 为什么必须**逐条**估算，而不能用一个平均宽度：
+ * 弹幕长度差别很大（4~40 字），4 字的"就这？"约 55px，40 字的长弹幕约 600px。
+ * 按平均值算的话，长的那条尾巴根本还没让开，下一条就冲进来了 —— 表现就是
+ * "同一行收尾时会重叠"。
+ *
+ * 中文/全角字符按 1em、西文数字按 0.55em、空格按 0.3em。
+ * 再加"昵称："前缀（约 3.5em）。
+ *
+ * @param {object} item
+ * @param {number} fontSize
+ * @param {number} [padPx] 额外像素余量（字距、字重、估算误差）
+ */
+export function estimateWidth(item, fontSize = 15, padPx = 0) {
+  const fs = Math.max(8, Number(fontSize) || 15);
+  const content = String(item?.内容 ?? '');
+  let em = 0;
+  for (const ch of content) {
+    const code = ch.codePointAt(0);
+    if (ch === ' ') em += 0.3;
+    // CJK / 全角标点 / 假名 / 韩文：按一个全角宽
+    else if (
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe4f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x20000 && code <= 0x3fffd)
+    ) {
+      em += 1;
+    } else {
+      em += 0.55;
+    }
+  }
+  const name = String(item?.昵称 ?? '').trim();
+  if (name) em += 3.5; // "昵称：" 前缀
+  return Math.max(24, em * fs + Number(padPx || 0));
+}
+
+/**
  * 安排出现时刻 + 分配轨道，**保证同轨不重叠**。
  *
- * 为什么必须做碰撞检测：同轨两条如果只是时间上挨得近，就会一直挨得近 ——
- * 光随机时刻治不了重叠。可靠的办法是：算清楚前一条什么时候让开，再决定这一条能不能进这条轨道。
- *
- * **关键取舍：同轨速度被统一（取该轨道的速度），所以不会追尾。**
- * 曾经试过"按最坏速度差补偿间隔"，但数学上算出来 ±2% 的速度浮动就需要 49 秒间隔 ——
- * 速度差越小、追尾越慢，却终究会追上，于是要求无限长的间隔。所以正确做法是
- * **同轨不设速度差**。速度浮动的目的是"不要整齐划一"，
- * **跨轨道不同速度**已经达到了这个效果，同轨统一不会损失观感。
+ * 关键点有两个，缺一个都还会重叠：
+ *   1. **同轨速度统一** —— 否则快的会慢慢追上慢的；
+ *   2. **按每条自己的宽度留间隔** —— 否则长的那条尾巴还没让开，下一条就进来了
+ *      （这就是"同一行收尾时重叠"的原因）。
  *
  * @param {object[]} items
  * @param {object} opts
@@ -646,11 +685,12 @@ export function buildStoryContext(messages, { rounds = 2, charBudget = 6000 } = 
  * @param {number} opts.lanes        可用轨道数
  * @param {number} opts.speed        基准速度 px/s
  * @param {number} opts.stageWidth   舞台宽度 px
- * @param {number} [opts.avgWidth]   每条弹幕的平均宽度 px（估的，没法精确测量）
+ * @param {number} [opts.fontSize]   字号，用来逐条估宽度
  * @param {number} [opts.gapPx]      同轨最小净间隔 px
+ * @param {number} [opts.textPadPx]  宽度余量 px（字距/字重/估算误差）
  * @param {number} [opts.speedVarPct] 速度浮动上限（百分比）。>0 时**同轨会被统一到同一个速度**
  * @param {()=>number} [opts.rand]
- * @returns {object[]} 带 `延迟`、`轨道`（以及统一后的 `速度`）的新数组
+ * @returns {object[]} 带 `延迟`、`轨道`、`速度`、`估宽` 的新数组
  */
 export function assignLanesAndDelays(items, opts = {}) {
   const list = Array.isArray(items) ? items : [];
@@ -660,24 +700,22 @@ export function assignLanesAndDelays(items, opts = {}) {
   const jitterPct = Math.max(0, Number(opts.jitterPct) || 0);
   const lanes = Math.max(1, Math.floor(Number(opts.lanes) || 1));
   const speed = Math.max(20, Number(opts.speed) || 110);
-  const stageWidth = Math.max(120, Number(opts.stageWidth) || 800);
-  const avgWidth = Math.max(24, Number(opts.avgWidth) || 200);
-  const gapPx = Math.max(0, opts.gapPx === undefined ? 26 : Number(opts.gapPx));
+  const fontSize = Math.max(8, Number(opts.fontSize) || 15);
+  const gapPx = Math.max(0, opts.gapPx === undefined ? 20 : Number(opts.gapPx));
+  const textPadPx = Math.max(0, Number(opts.textPadPx) || 0);
   const rand = typeof opts.rand === 'function' ? opts.rand : Math.random;
   const speedVarPct = Math.min(60, Math.max(0, Number(opts.speedVarPct) || 0));
 
-  // ① 理想时刻
+  // ① 逐条估宽（同轨间隔就按它算）
+  const widths = list.map((it) => estimateWidth(it, fontSize, textPadPx));
+
+  // ② 理想时刻
   const delays = assignDelays(n, base, jitterPct, rand);
 
-  // ② 按时刻排序后逐条安排（同刻的按原顺序）
+  // ③ 按时刻排序后逐条安排（同刻的按原顺序）
   const order = list.map((it, i) => ({ it, i, t: delays[i] })).sort((a, b) => a.t - b.t || a.i - b.i);
 
-  // 同轨最小间隔：让前一条的尾巴跑开"它自己的宽度 + 净间隔"所需的时间。
-  // 因为同轨速度一致，这个固定值就够了（不存在追尾）。
-  const needSec = (avgWidth + gapPx) / speed;
-
   const laneFreeAt = new Array(lanes).fill(0);
-  // 每条轨道一个统一速度：在基准上做 ±speedVarPct 的浮动，**同轨共用一个值**
   const laneSpeed = new Array(lanes).fill(Math.round(speed));
   const laneUsed = new Array(lanes).fill(false);
   const out = new Array(n);
@@ -701,7 +739,7 @@ export function assignLanesAndDelays(items, opts = {}) {
     // 内部记账与对外给出的值必须是同一个数，否则取整误差会让约束在小数位上失效。
     t = Math.ceil(t * 1000) / 1000;
 
-    // 首次用到这条轨道时，给它定一个速度；之后同轨都沿用这个值
+    // 首次用到这条轨道时给它定一个速度；之后同轨都沿用（这是"不追尾"的前提）
     if (!laneUsed[pick]) {
       laneUsed[pick] = true;
       laneSpeed[pick] =
@@ -710,14 +748,19 @@ export function assignLanesAndDelays(items, opts = {}) {
           : Math.round(speed);
     }
 
+    const w = widths[entry.i];
     out[entry.i] = {
       ...entry.it,
       延迟: t,
       轨道: pick,
-      // 同轨统一速度：这是"同轨绝不重叠"的前提
       速度: laneSpeed[pick],
+      // 上报**不取整**的宽度：取整会让"外面对得上、里面算的不是这个数"，
+      // 间隔就会差那么几毫秒（幽灵般的 5ms 偏差）。要舍入也只在上报时舍，不参与计算。
+      估宽: Math.round(w * 100) / 100,
     };
-    laneFreeAt[pick] = t + needSec;
+    // 这个轨道要等**这一条自己的宽度 + 净间隔**全部让开。
+    // 间隔也向上取整到毫秒，与时刻同一口径。
+    laneFreeAt[pick] = t + Math.ceil(((w + gapPx) / speed) * 1000) / 1000;
   }
   return out;
 }

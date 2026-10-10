@@ -202,9 +202,14 @@ export function playOverlay(doc, items, opts = {}) {
     const lane = Number.isFinite(Number(item?.轨道)) && Number(item.轨道) >= 0 ? Math.floor(Number(item.轨道)) : i % lanes;
     node.style.top = `${lane * laneH}px`;
     node.style.color = item.color || '#fff';
-    node.style.animationDuration = `${durationFor(item).toFixed(2)}s`;
+    const dur = durationFor(item);
+    const delay = delayOfItem(item, i, stagger);
+    node.style.animationDuration = `${dur.toFixed(2)}s`;
     // 出现时刻：优先用每条自己定好的（带浮动），没有就退回等间隔
-    node.style.animationDelay = `${delayOfItem(item, i, stagger).toFixed(2)}s`;
+    node.style.animationDelay = `${delay.toFixed(2)}s`;
+    // 循环时要靠这两个值把"延时 + 时长"重新贴回去（见下面的 restart），
+    // 所以记在节点上，而不是每轮重新算（重算会跟首轮不一致）
+    node.__stdTiming = { dur, delay };
 
     if (item.昵称) {
       const n = doc.createElement('span');
@@ -229,14 +234,22 @@ export function playOverlay(doc, items, opts = {}) {
   /**
    * 循环播放：弹幕流本来就不该"播一次就没了"。
    *
-   * 做法是把每一轮的 animation 重启动（`animation = 'none'` 再读一次 offsetWidth 强制回流，
-   * 然后恢复），而不是删掉重建节点 —— 后者每轮都要重排 DOM，久了会卡。
+   * 做法是把每一轮的动画**原地重启**（`animation = 'none'` → 强制回流 → 恢复），
+   * 而不是删掉重建节点 —— 后者每轮都要重排 DOM，久了会卡。
+   *
+   * ⚠️ 关键细节：`animation` 是简写属性，把它置 `'none'` 会**连内联的
+   * animation-delay / animation-duration 一起清掉**。只恢复 `animation = ''`
+   * 的话，第二轮会变成"所有弹幕同时冒出来 + 用 CSS 里的默认时长"，
+   * 看起来根本不是重新播一遍。所以必须把记好的 时长/延时 再贴回去。
    */
   const restart = () => {
     for (const node of stage.children) {
+      const timing = node.__stdTiming || {};
       node.style.animation = 'none';
       void node.offsetWidth; // 强制回流，让浏览器忘掉上一轮的动画
       node.style.animation = '';
+      if (timing.dur) node.style.animationDuration = `${Number(timing.dur).toFixed(2)}s`;
+      if (timing.delay !== undefined) node.style.animationDelay = `${Number(timing.delay).toFixed(2)}s`;
     }
   };
 
