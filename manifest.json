@@ -1,0 +1,12 @@
+{
+  "display_name": "弹幕直播间 (Danmaku Live)",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "ST-Danmaku contributors",
+  "version": "0.1.0",
+  "homePage": "https://github.com/YOUR-NAME/ST-Danmaku",
+  "auto_update": false
+}

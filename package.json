@@ -1,0 +1,24 @@
+{
+  "name": "st-danmaku",
+  "version": "0.1.0",
+  "description": "A card-agnostic live-stream danmaku (bullet comment) extension for SillyTavern / TauriTavern. Reads the active world book to build a viewer profile, then generates on-world danmaku that is tied to the story but never touches the main prompt.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check index.js && node --check src/store.js && node --check src/st.js && node --check src/llm.js && node --check src/scan.js && node --check src/danmaku.js && node --check src/color.js && node --check src/frame.js && node --check src/overlay.js && node --check src/panel.js && node --check src/main.js",
+    "test": "node test/run.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "keywords": [
+    "sillytavern",
+    "tauritavern",
+    "extension",
+    "danmaku",
+    "worldbook",
+    "roleplay"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
