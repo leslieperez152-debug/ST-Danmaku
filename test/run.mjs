@@ -3811,6 +3811,45 @@ await test('拉伸重排：没有弹幕时不报错', () => {
   ov.stopOverlay(d2);
 });
 
+await test('关掉悬浮层 + 关掉静态列表时，框至少要有标题栏（不能整块不见）', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({
+    seedDemo: false,
+    count: 2,
+    api: { useJsonSchema: false },
+    appearance: { overlayEnabled: false, frameEnabled: true, keepStatic: false },
+  });
+  await queueOneBatch(2);
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, res.error);
+  const frame = d.querySelector('.std-frame');
+  ok(frame, '框必须存在');
+  ok(frame.querySelector('.std-frame-head'), '标题栏必须在（这是"看得见"的底线）');
+  // 播完之后至少标题栏还在，不能整块消失
+  const win = d.defaultView;
+  const origRaf = win.requestAnimationFrame;
+  win.requestAnimationFrame = (fn) => { fn(); return 1; };
+  await new Promise((r) => setTimeout(r, 40));
+  ok(d.querySelector('.std-frame .std-frame-head'), '播完之后标题栏仍然必须在');
+  win.requestAnimationFrame = origRaf;
+  app.destroy();
+});
+
+await test('把 frameHeight 设得很小（只够一行）时，框依然要出现', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({
+    seedDemo: false,
+    count: 2,
+    api: { useJsonSchema: false },
+    appearance: { frameHeight: 48, fontSize: 15 },
+  });
+  await queueOneBatch(2);
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, res.error);
+  ok(d.querySelector('.std-frame'), '框高很小也必须出现（不能算出 0 行就整块不见）');
+  app.destroy();
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {
