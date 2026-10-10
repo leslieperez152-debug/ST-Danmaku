@@ -355,8 +355,12 @@ function pages(app) {
           ),
           row2('背景（自由填写）', text('appearance.overlayBg', a.overlayBg, 'CSS 颜色或渐变，如 rgba(0,0,0,.4)')),
           row2(
+            '循环播放',
+            toggle('appearance.overlayLoop', a.overlayLoop, '开着：每轮播完就从头再飞一遍，像真的有人在一直刷弹幕'),
+          ),
+          row2(
             '播完自动淡出',
-            toggle('appearance.overlayFade', a.overlayFade, '默认关：播完只清空弹幕，层保持可见。开着的话整层会淡到几乎看不见（很容易以为"消失了"）'),
+            toggle('appearance.overlayFade', a.overlayFade, '只在关掉「循环播放」时才起作用。默认关：整层会淡到几乎看不见，很容易以为"消失了"'),
           ),
           '<div class="std-hint">⚠️ 关于「播完自动淡出」：打开之后每批播完整层会淡到 <b>3% 不透明度</b>，在深色背景上基本就等于看不见了 —— 以前有人据此以为"悬浮层消失了"。所以默认是关的。</div>',
           btnRow([

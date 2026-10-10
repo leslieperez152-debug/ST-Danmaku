@@ -355,22 +355,24 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
       /* 出现时刻 + 防重叠轨道分配：
          速度恒定意味着"时间上挨得近"的两条会一直挨得近，所以同轨重叠只能靠分轨道解决。
-         关掉时退回纯随机浮动（更密、但允许叠一点）。 */
-      const lh = Math.max(10, Math.round((Number(s.appearance.fontSize) || 15) * 1.9));
-      const frameH = Math.max(lh + 46, Number(s.appearance.frameHeight) || 148);
-      const frameLanes = Math.max(1, Math.floor((frameH - 40) / lh));
-      if (s.appearance.avoidOverlap !== false) {
-        const stageWidth = Math.max(320, overlayStageWidth(doc) || frameStageWidth(doc) || 900);
+         关掉时退回纯随机浮动（更密、但允许叠一点）。
+
+         注意：这里只用**设置的**尺寸做一个初步安排；
+         真正的尺寸（框被拖过多大、悬浮层多大）要等布局完成才知道，
+         所以渲染前会在 renderBatch 里按实测尺寸**重排一次**。
+         —— 以前漏了这步，导致"把框改小之后弹幕被裁掉一半"。 */
+      if (s.appearance.avoidOverlap === false) {
+        items = assignDelaysToItems(items, s.appearance.stagger, s.appearance.delayVariance);
+      } else {
         items = assignLanesAndDelays(items, {
+          ...layoutHints(),
           base: s.appearance.stagger,
           jitterPct: s.appearance.delayVariance,
-          lanes: frameLanes,
           speed: s.appearance.speed,
-          stageWidth,
           gapPx: s.appearance.gap,
+          // 同轨会被统一到同一个速度（否则快的会追上慢的并叠上）
+          speedVarPct: s.appearance.speedVariance,
         });
-      } else {
-        items = assignDelaysToItems(items, s.appearance.stagger, s.appearance.delayVariance);
       }
 
       /* 记账 */
@@ -467,26 +469,43 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
   }
 
   /** 把一批弹幕渲染到楼层框（以及可选的悬浮层） */
-  /** 悬浮层舞台宽度（还没铺开时给 0，让调用方退回别的估计） */
-  function overlayStageWidth(d) {
-    try {
-      const st = d.querySelector('#' + 'std-overlay .std-ov-stage') || d.querySelector('.std-ov-stage');
-      const w = st && typeof st.getBoundingClientRect === 'function' ? st.getBoundingClientRect().width : 0;
-      return w > 0 ? w : 0;
-    } catch {
-      return 0;
-    }
-  }
+  /**
+   * 当前的"舞台尺寸"提示：轨道数与舞台宽度/高度。
+   *
+   * 必须**在布局之后**读，否则拿到的是旧值 —— 用户把框拖小之后，
+   * 如果还用旧尺寸安排轨道，弹幕就会被裁掉（"只出现一半"）。
+   */
+  function layoutHints() {
+    const a = state.settings.appearance;
+    const lh = Math.max(10, Math.round((Number(a.fontSize) || 15) * 1.9));
 
-  /** 弹幕框舞台宽度 */
-  function frameStageWidth(d) {
-    try {
-      const st = d.querySelector('.std-frame-stage');
-      const w = st && typeof st.getBoundingClientRect === 'function' ? st.getBoundingClientRect().width : 0;
-      return w > 0 ? w : 0;
-    } catch {
-      return 0;
+    // 优先用悬浮层的实测尺寸（它才是"看得见多大"的那个）；
+    // 没开悬浮层就退到弹幕框的实测尺寸；都拿不到再用设置里的高度估。
+    const ovStage = doc.querySelector('.std-ov-stage');
+    let availH = 0;
+    let availW = 0;
+    if (ovStage && typeof ovStage.getBoundingClientRect === 'function') {
+      const r = ovStage.getBoundingClientRect();
+      if (r.height > 0) availH = r.height;
+      if (r.width > 0) availW = r.width;
     }
+    if (!availH) {
+      const fStage = doc.querySelector('.std-frame-stage');
+      if (fStage && typeof fStage.getBoundingClientRect === 'function') {
+        const r = fStage.getBoundingClientRect();
+        if (r.height > 0) availH = r.height;
+        if (r.width > 0) availW = r.width;
+      }
+    }
+    // 舞台还没铺开：用设置里的框高估一个
+    const frameH = Math.max(lh + 46, Number(a.frameHeight) || 148);
+    const h = availH > 0 ? availH : frameH - 40;
+    return {
+      // 至少 1 轨；高度决定能放几行
+      lanes: Math.max(1, Math.floor(h / lh)),
+      // 宽度至少给 320：太窄时宁可让弹幕略超出，也不要算出 0 或负数
+      stageWidth: Math.max(320, Math.round(availW) || 900),
+    };
   }
 
   function renderBatch(batch, { messageId, animate = true } = {}) {
@@ -496,6 +515,16 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
     // 楼层框：开场白不挂（可选），或者拿不到有效楼层时干脆不挂（悬浮层照常放）
     const canMountFrame = Number.isFinite(Number(mid)) && Number(mid) >= 0 && !(s.skipOpening && isOpeningMessage(mid));
+
+    /* 先把悬浮层的尺寸落到 DOM 上，再读尺寸。
+       顺序很重要：如果先读后应用，读到的就是**上一次**的大小，
+       用户把框拖小之后轨道数还是按旧的算 —— 表现就是"弹幕只出现一半"。 */
+    if (app.overlayEnabled) {
+      ensureOverlay(doc);
+      applyOverlayStyle(doc, app);
+      applyRect(doc, app.overlayRect);
+      showOverlay(doc, true);
+    }
 
     if (app.frameEnabled && canMountFrame) {
       // 同一楼已有框就先停掉旧的
@@ -516,22 +545,51 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         state.frames.set(mid, frame);
         if (animate) {
           // 等浏览器完成布局再播，否则宽度算不准
-          const kick = () => playFrame(frame, { doc, appearance: app });
+          const kick = () => {
+            // 布局已定，按**实测尺寸**重排一次轨道（用户可能把框拖得很小）
+            relayoutIfNeeded(batch);
+            playFrame(frame, { doc, appearance: app });
+          };
           if (typeof win.requestAnimationFrame === 'function') win.requestAnimationFrame(kick);
           else setTimeout(kick, 30);
         } else {
+          relayoutIfNeeded(batch);
           playFrame(frame, { doc, appearance: app });
         }
       }
     }
 
     if (app.overlayEnabled) {
-      ensureOverlay(doc);
-      applyOverlayStyle(doc, app);
-      applyRect(doc, app.overlayRect);
-      showOverlay(doc, true);
+      // 尺寸已经在上面应用过了，这里只负责播
       if (animate) playOverlay(doc, batch.items, { appearance: app });
     }
+  }
+
+  /**
+   * 按**当前实测尺寸**重排一批弹幕的轨道与时刻。
+   *
+   * 为什么需要单独一步：生成时的尺寸只是估计值（框还没挂上、悬浮层可能刚改过大小），
+   * 而轨道数取决于"能放几行"、防重叠取决于"舞台多宽"。
+   * 不重排的话，用户把框改小之后弹幕会被裁掉、或者轨道数还是旧的。
+   *
+   * 直接改写 batch.items（就地重排），这样重播时也是同一份数据。
+   */
+  function relayoutIfNeeded(batch) {
+    const a = state.settings.appearance;
+    if (a.avoidOverlap === false) return; // 关掉防重叠时不做轨道重排
+    const hints = layoutHints();
+    const next = assignLanesAndDelays(batch.items, {
+      base: a.stagger,
+      jitterPct: a.delayVariance,
+      lanes: hints.lanes,
+      speed: a.speed,
+      stageWidth: hints.stageWidth,
+      gapPx: a.gap,
+      speedVarPct: a.speedVariance,
+    });
+    // 就地替换，保持 batch.items 的引用不变（frame / overlay 拿的是同一个数组）
+    batch.items.length = 0;
+    batch.items.push(...next);
   }
 
   /** 重播某一批（历史面板用） */
@@ -1016,6 +1074,10 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       return `已拉取 ${n} 个模型${when ? `（${when}）` : ''}${
         stale ? '。⚠️ 你换了来源或地址，这个列表可能不适用，建议重新拉一次' : ''
       }`;
+    },
+    /** 面板用：当前的舞台尺寸提示（轨道数与宽度）——把框拖小之后它会跟着变 */
+    layoutHints() {
+      return layoutHints();
     },
     /** 面板用：本次扫描大约要读多少字（让用户心里有数） */
     estimateScan() {

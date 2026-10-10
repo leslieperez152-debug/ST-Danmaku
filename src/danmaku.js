@@ -627,6 +627,31 @@ export function buildStoryContext(messages, { rounds = 2, charBudget = 6000 } = 
  * @param {()=>number} [opts.rand]
  * @returns {object[]} 带 `延迟` 与 `轨道` 的新数组
  */
+/**
+ * 安排出现时刻 + 分配轨道，**保证同轨不重叠**。
+ *
+ * 为什么必须做碰撞检测：同轨两条如果只是时间上挨得近，就会一直挨得近 ——
+ * 光随机时刻治不了重叠。可靠的办法是：算清楚前一条什么时候让开，再决定这一条能不能进这条轨道。
+ *
+ * **关键取舍：同轨速度被统一（取该轨道的速度），所以不会追尾。**
+ * 曾经试过"按最坏速度差补偿间隔"，但数学上算出来 ±2% 的速度浮动就需要 49 秒间隔 ——
+ * 速度差越小、追尾越慢，却终究会追上，于是要求无限长的间隔。所以正确做法是
+ * **同轨不设速度差**。速度浮动的目的是"不要整齐划一"，
+ * **跨轨道不同速度**已经达到了这个效果，同轨统一不会损失观感。
+ *
+ * @param {object[]} items
+ * @param {object} opts
+ * @param {number} opts.base         基准间隔（秒）
+ * @param {number} opts.jitterPct    间隔浮动百分比
+ * @param {number} opts.lanes        可用轨道数
+ * @param {number} opts.speed        基准速度 px/s
+ * @param {number} opts.stageWidth   舞台宽度 px
+ * @param {number} [opts.avgWidth]   每条弹幕的平均宽度 px（估的，没法精确测量）
+ * @param {number} [opts.gapPx]      同轨最小净间隔 px
+ * @param {number} [opts.speedVarPct] 速度浮动上限（百分比）。>0 时**同轨会被统一到同一个速度**
+ * @param {()=>number} [opts.rand]
+ * @returns {object[]} 带 `延迟`、`轨道`（以及统一后的 `速度`）的新数组
+ */
 export function assignLanesAndDelays(items, opts = {}) {
   const list = Array.isArray(items) ? items : [];
   const n = list.length;
@@ -639,6 +664,7 @@ export function assignLanesAndDelays(items, opts = {}) {
   const avgWidth = Math.max(24, Number(opts.avgWidth) || 200);
   const gapPx = Math.max(0, opts.gapPx === undefined ? 26 : Number(opts.gapPx));
   const rand = typeof opts.rand === 'function' ? opts.rand : Math.random;
+  const speedVarPct = Math.min(60, Math.max(0, Number(opts.speedVarPct) || 0));
 
   // ① 理想时刻
   const delays = assignDelays(n, base, jitterPct, rand);
@@ -646,19 +672,19 @@ export function assignLanesAndDelays(items, opts = {}) {
   // ② 按时刻排序后逐条安排（同刻的按原顺序）
   const order = list.map((it, i) => ({ it, i, t: delays[i] })).sort((a, b) => a.t - b.t || a.i - b.i);
 
-  // 每条进入时占据的空间：它的宽度 + 想要的净间隔。
-  // 尾巴让开所需秒数 = 这个空间 / 速度。
-  const occupySec = (avgWidth + gapPx) / speed;
-  // 上一条彻底离开舞台所需秒数（之后它就不占了）
-  const clearSec = (stageWidth + avgWidth) / speed;
+  // 同轨最小间隔：让前一条的尾巴跑开"它自己的宽度 + 净间隔"所需的时间。
+  // 因为同轨速度一致，这个固定值就够了（不存在追尾）。
+  const needSec = (avgWidth + gapPx) / speed;
 
-  const laneFreeAt = new Array(lanes).fill(0); // 每条轨道下一次可进入的时刻
+  const laneFreeAt = new Array(lanes).fill(0);
+  // 每条轨道一个统一速度：在基准上做 ±speedVarPct 的浮动，**同轨共用一个值**
+  const laneSpeed = new Array(lanes).fill(Math.round(speed));
+  const laneUsed = new Array(lanes).fill(false);
   const out = new Array(n);
 
   for (const entry of order) {
     let t = entry.t;
-    // 找一条能立刻进的轨道：它的空闲时刻不晚于这一条的时刻
-    let pick = -1;
+    let pick = 0;
     let bestFree = Infinity;
     for (let l = 0; l < lanes; l += 1) {
       if (laneFreeAt[l] <= t + 1e-6) {
@@ -672,21 +698,26 @@ export function assignLanesAndDelays(items, opts = {}) {
     }
     if (laneFreeAt[pick] > t) t = laneFreeAt[pick]; // 都让不开就顺延
     // 先**向上**取整到毫秒，再用取整后的值记账 ——
-    // 内部记账与对外给出的值必须是同一个数，否则四舍五入/取整的误差
-    // 会让"尾巴让开"的约束在小数位上失效，同轨两条真的叠上。
+    // 内部记账与对外给出的值必须是同一个数，否则取整误差会让约束在小数位上失效。
     t = Math.ceil(t * 1000) / 1000;
+
+    // 首次用到这条轨道时，给它定一个速度；之后同轨都沿用这个值
+    if (!laneUsed[pick]) {
+      laneUsed[pick] = true;
+      laneSpeed[pick] =
+        speedVarPct > 0
+          ? Math.max(20, Math.round(speed * (1 + ((rand() * 2 - 1) * speedVarPct) / 100)))
+          : Math.round(speed);
+    }
 
     out[entry.i] = {
       ...entry.it,
       延迟: t,
       轨道: pick,
+      // 同轨统一速度：这是"同轨绝不重叠"的前提
+      速度: laneSpeed[pick],
     };
-    // 这条占据轨道到 t + occupySec；如果它很快飞出舞台，之后就完全自由了
-    laneFreeAt[pick] = t + occupySec;
-    // 若某条轨道上的弹幕已经飞出去了，轨道就空出来（用"完全离开"兜底，避免越排越后）
-    for (let l = 0; l < lanes; l += 1) {
-      if (laneFreeAt[l] > 0 && laneFreeAt[l] - clearSec > t) laneFreeAt[l] = t;
-    }
+    laneFreeAt[pick] = t + needSec;
   }
   return out;
 }

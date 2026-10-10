@@ -175,9 +175,10 @@ export function playOverlay(doc, items, opts = {}) {
   const stagger = Number(opts.stagger) > 0 ? Number(opts.stagger) : Number(app.stagger) > 0 ? Number(app.stagger) : 0.22;
   const countEl = root.__std.count;
 
-  // 清掉上一批的定时器
+  // 清掉上一批的定时器，并把"停止闸门"打开（上一批可能刚被 stopOverlay 关掉）
   (root.__std.timers || []).forEach((t) => clearTimeout(t));
   root.__std.timers = [];
+  root.__std.stopped = false;
   stage.innerHTML = '';
   root.classList.remove('faded');
 
@@ -214,26 +215,66 @@ export function playOverlay(doc, items, opts = {}) {
 
   if (countEl) countEl.textContent = `${items.length} 条`;
 
-  // 按"最晚结束的那条"算收尾时刻（出现时刻 + 飞行时长），
-  // 否则会提前把还在飞的弹幕清掉
+  // 按"最晚结束的那条"算收尾时刻（出现时刻 + 飞行时长），否则会提前把还在飞的弹幕清掉
   const endTimes = items.map((it, i) => delayOfItem(it, i, stagger) + durationFor(it));
   const maxEnd = endTimes.length ? Math.max(...endTimes) : 4;
-  const totalMs = maxEnd * 1000 + 300;
-  const timer = setTimeout(() => {
-    if (app.overlayFade === true) {
-      // 用户明确要求"播完淡出"：整层淡下去（层还在，鼠标移进去仍能拖动）
-      root.classList.add('faded');
-    } else {
-      // 默认：**层保持可见**，只是把飞完的弹幕清掉。
-      // 这样不会出现"整层淡到看不见＝像是消失了"，也不会让弹幕停在最后一帧堆在幕布上。
-      stage.innerHTML = '';
-      if (countEl) countEl.textContent = '';
+  const batchMs = maxEnd * 1000 + 300;
+
+  /**
+   * 循环播放：弹幕流本来就不该"播一次就没了"。
+   *
+   * 做法是把每一轮的 animation 重启动（`animation = 'none'` 再读一次 offsetWidth 强制回流，
+   * 然后恢复），而不是删掉重建节点 —— 后者每轮都要重排 DOM，久了会卡。
+   */
+  const restart = () => {
+    for (const node of stage.children) {
+      node.style.animation = 'none';
+      void node.offsetWidth; // 强制回流，让浏览器忘掉上一轮的动画
+      node.style.animation = '';
     }
-    if (typeof opts.onDone === 'function') opts.onDone();
-  }, totalMs);
+  };
+
+  let timer;
+  if (app.overlayLoop === true) {
+    /**
+     * 用 setTimeout 递归自重排，而不是 setInterval。
+     *
+     * setInterval 会一直挂着一个定时器，stopOverlay 清掉当前 id 之后
+     * 后面还会继续触发，等于停不干净、还泄漏。
+     * 自重排的话任何时刻只有一个待触发的 id，清掉它就真的停了。
+     *
+     * 另外用 root.__std.stopped 做闸门：光 clearTimeout 挡不住"已经被排进队列、
+     * 马上就要跑"的那一个，闸门才能真正停住（否则测试进程永远不退出）。
+     */
+    const cycle = Math.max(1500, batchMs);
+    root.__std.stopped = false;
+    const tick = () => {
+      if (root.__std.stopped) return;
+      restart();
+      const next = setTimeout(tick, cycle);
+      // Node 里 unref 让这个定时器不阻止进程退出（浏览器里没有这个方法，会被忽略）。
+      // 循环弹幕本来就是"只要页面活着就一直播"，不该把测试进程吊住。
+      if (typeof next?.unref === 'function') next.unref();
+      root.__std.timers = [next]; // 只保留"当前这一个"，stopOverlay 才清得干净
+    };
+    timer = setTimeout(tick, cycle);
+    if (typeof timer?.unref === 'function') timer.unref();
+  } else {
+    timer = setTimeout(() => {
+      if (app.overlayFade === true) {
+        // 用户明确要求"播完淡出"：整层淡下去（层还在，鼠标移进去仍能拖动）
+        root.classList.add('faded');
+      } else {
+        // 默认：**层保持可见**，只是把飞完的弹幕清掉。
+        stage.innerHTML = '';
+        if (countEl) countEl.textContent = '';
+      }
+      if (typeof opts.onDone === 'function') opts.onDone();
+    }, batchMs);
+  }
   root.__std.timers.push(timer);
 
-  return { duration: maxEnd, totalMs, lanes };
+  return { duration: maxEnd, totalMs: batchMs, lanes, loop: app.overlayLoop === true };
 }
 
 /**
@@ -242,10 +283,12 @@ export function playOverlay(doc, items, opts = {}) {
 export function stopOverlay(doc) {
   const root = doc.getElementById(OVERLAY_ID);
   if (!root || !root.__std) return;
+  // 先把闸门关上：光 clearTimeout 挡不住"已排进队列、马上就要跑"的那一个
+  root.__std.stopped = true;
   (root.__std.timers || []).forEach((t) => clearTimeout(t));
   root.__std.timers = [];
   root.__std.stage.innerHTML = '';
-  root.__std.count.textContent = '';
+  if (root.__std.count) root.__std.count.textContent = '';
 }
 
 /* ───────────── 拖动 / 缩放 ───────────── */

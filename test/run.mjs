@@ -3092,6 +3092,172 @@ await test('截断抢救：嵌套数组与多余右括号不会误伤', () => {
   eq(got[0].a.length, 3, '嵌套内容要完整保留');
 });
 
+await test('【完整生命周期】生成后跑满动画时长，悬浮层不该被隐藏或淡出', async () => {
+  const { d, app } = makeDrawerEnv();
+  app.updateSettings({ seedDemo: false, count: 3, api: { useJsonSchema: false }, appearance: { overlayFade: false } });
+  resetMockConnection();
+  queueResponse({
+    choices: [
+      {
+        message: {
+          content: JSON.stringify({
+            弹幕: [
+              { 昵称: '甲', 内容: '他左手在抖', 类型: '懂行', 回复: '' },
+              { 昵称: '乙', 内容: '这剑法不对', 类型: '抬杠', 回复: '' },
+            ],
+          }),
+        },
+      },
+    ],
+  });
+
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, `生成应当成功：${res.error}`);
+
+  const ov = d.getElementById('std-overlay');
+  ok(ov, '悬浮层应当存在');
+  const snap = (label) => ({
+    label,
+    hidden: ov.getAttribute('data-std-hidden'),
+    faded: ov.classList.contains('faded'),
+    display: ov.style.display,
+    stage: ov.querySelector('.std-ov-stage')?.children.length ?? -1,
+  });
+  const before = snap('刚生成');
+  ok(before.hidden === null, '生成后应当可见');
+  ok(!before.faded, '生成后不该处于淡出状态');
+  ok(before.stage > 0, `应当有弹幕在舞台上：${before.stage}`);
+
+  // 跑满整段动画（收尾定时器就是在这个点附近触发的）
+  await new Promise((r) => setTimeout(r, 1600));
+  const after = snap('1.6 秒后');
+  eq(after.hidden, null, `收尾后不该被隐藏：${JSON.stringify(after)}`);
+  ok(!after.faded, `overlayFade 关掉时不该被淡出：${JSON.stringify(after)}`);
+  ok(after.stage === 0 || after.stage > 0, '舞台清空是允许的（播完清弹幕、层留着）');
+
+  app.destroy();
+});
+
+await test('【完整生命周期】即使开着淡出，也只该淡不该消失（hidden 保持空）', async () => {
+  const { d, app } = makeDrawerEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
+  // 明确要求淡出
+  app.updateSettings({ appearance: { overlayFade: true } });
+  resetMockConnection();
+  queueResponse({
+    choices: [{ message: { content: JSON.stringify({ 弹幕: [{ 昵称: '甲', 内容: '就这一下', 类型: '普通', 回复: '' }] }) } }],
+  });
+
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, res.error);
+  const ov = d.getElementById('std-overlay');
+  await new Promise((r) => setTimeout(r, 1600));
+  eq(ov.getAttribute('data-std-hidden'), null, '淡出不该等于隐藏（层还在，只是透明）');
+  app.destroy();
+});
+
+/* ───────────── 尺寸适配 · 循环播放 ───────────── */
+
+section('13k. 尺寸适配与循环播放');
+
+await test('尺寸适配：舞台越矮，能用的轨道越少（至少 1 轨，不会算成 0）', () => {
+  const items = Array.from({ length: 12 }, (_, i) => ({ 内容: `x${i}` }));
+  const base = { base: 0.22, jitterPct: 30, speed: 110, gapPx: 16, rand: seeded(3), speedVarPct: 5 };
+
+  const tall = danmaku.assignLanesAndDelays(items, { ...base, lanes: 6, stageWidth: 900 });
+  const short = danmaku.assignLanesAndDelays(items, { ...base, lanes: 1, stageWidth: 900 });
+  ok(new Set(tall.map((x) => x.轨道)).size > 1, '高框应当用多条轨道');
+  eq(new Set(short.map((x) => x.轨道)).size, 1, '矮框只有 1 轨');
+
+  // 轨道数不能是 0 或负数（那会让 top 变成 NaN）
+  const degenerate = danmaku.assignLanesAndDelays(items, { ...base, lanes: 0, stageWidth: 0 });
+  for (const it of degenerate) {
+    ok(Number.isInteger(it.轨道) && it.轨道 >= 0, `轨道必须是非负整数：${it.轨道}`);
+    ok(Number.isFinite(it.延迟) && it.延迟 >= 0, `时刻必须是有限非负数：${it.延迟}`);
+  }
+});
+
+await test('尺寸适配：同轨被统一到同一个速度（这是"不追尾"的前提）', () => {
+  const items = Array.from({ length: 24 }, (_, i) => ({ 内容: `x${i}` }));
+  const out = danmaku.assignLanesAndDelays(items, {
+    base: 0.2,
+    jitterPct: 40,
+    lanes: 4,
+    speed: 110,
+    stageWidth: 900,
+    gapPx: 16,
+    speedVarPct: 10, // 有速度浮动
+    rand: seeded(17),
+  });
+  // 同轨速度必须完全一致
+  const speedByLane = new Map();
+  for (const it of out) {
+    if (!speedByLane.has(it.轨道)) speedByLane.set(it.轨道, it.速度);
+    eq(it.速度, speedByLane.get(it.轨道), `轨道 ${it.轨道} 里的速度必须一致（否则快的会追上慢的）`);
+  }
+  // 但不同轨道之间应当有差异，否则"速度浮动"就白设了
+  const laneSpeeds = [...speedByLane.values()];
+  ok(new Set(laneSpeeds).size > 1, `不同轨道之间应当有速度差：${laneSpeeds.join(',')}`);
+});
+
+await test('尺寸适配：把框拖小之后，app 报出的轨道数会跟着变小', () => {
+  const { d, app } = makeDrawerEnv();
+  // 悬浮层可用高度由 rect 决定
+  app.updateSettings({ appearance: { overlayEnabled: true, fontSize: 15, overlayRect: { x: 0.1, y: 0.1, w: 0.8, h: 0.5 } } });
+  app.renderLastForTest?.();
+  const big = app.layoutHints();
+
+  app.updateSettings({ appearance: { overlayRect: { x: 0.1, y: 0.1, w: 0.8, h: 0.1 } } });
+  const small = app.layoutHints();
+
+  ok(big.lanes >= 1 && small.lanes >= 1, '轨道数至少是 1');
+  ok(small.lanes <= big.lanes, `把框改矮之后轨道数不该变多：${big.lanes} → ${small.lanes}`);
+  app.destroy();
+});
+
+await test('循环播放：默认开着，并且播完会重启动画而不是清空', () => {
+  const stale = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  stale.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+  const items = [
+    { 昵称: '甲', 内容: 'a', color: '#fff', 速度: 110, 延迟: 0, 轨道: 0 },
+    { 昵称: '乙', 内容: 'b', color: '#fff', 速度: 110, 延迟: 0.3, 轨道: 1 },
+  ];
+  const res = stale.playOverlay(d2, items, { appearance: { overlayLoop: true, fontSize: 15 } });
+  eq(res.loop, true, '应当报告处于循环模式');
+  const stage = root.querySelector('.std-ov-stage');
+  eq(stage.children.length, 2, '弹幕应当在舞台上');
+  eq(root.__std.timers.length, 1, '只应当挂一个待触发定时器（自重排，不是 setInterval）');
+  stale.stopOverlay(d2);
+  eq(root.__std.stopped, true, 'stopOverlay 必须关上闸门，否则定时器会一直重排');
+  eq(root.__std.timers.length, 0, '定时器应当被清空');
+});
+
+await test('循环关掉时：播完清空舞台（层保持可见），不会淡出', async () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+  const items = [{ 昵称: '甲', 内容: 'a', color: '#fff', 速度: 200, 延迟: 0, 轨道: 0 }];
+  const res = ov.playOverlay(d2, items, {
+    appearance: { overlayLoop: false, overlayFade: false, fontSize: 15 },
+  });
+  eq(res.loop, false);
+  // 等收尾定时器触发
+  await new Promise((r) => setTimeout(r, (res.totalMs || 1000) + 150));
+  eq(root.querySelector('.std-ov-stage').children.length, 0, '播完应当清空舞台');
+  eq(root.getAttribute('data-std-hidden'), null, '层本身必须还在');
+  ok(!root.classList.contains('faded'), '不该被淡出');
+  ov.stopOverlay(d2);
+});
+
+await test('循环是设置项且有默认值', () => {
+  const s = store.defaultSettings();
+  eq(s.appearance.overlayLoop, true, '默认应当循环播放');
+  eq(store.normalizeSettings({ appearance: { overlayLoop: false } }).appearance.overlayLoop, false, '关掉要生效');
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {
