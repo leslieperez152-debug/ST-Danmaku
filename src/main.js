@@ -37,6 +37,7 @@ import {
   listWorldbookEntries,
   refreshWorldbookNames,
   diagnoseWorldbookSources,
+  clearTauriIpcCache,
   getBoundWorldbooks,
   getCurrentConnection,
   setLiveInjection,
@@ -737,12 +738,14 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     },
     /** 面板用：强制刷新世界书清单（用户手动点"重新查找"时用） */
     async reloadWorldbooks() {
+      clearTauriIpcCache(); // 别让上次的探测结果被永久记住
       const list = await refreshWorldbookNames(true);
       api.emit('books', list);
       return list;
     },
     /** 面板用：把每一条获取途径都试一遍，报告结果（客户端上拿不到控制台时用） */
     async diagnoseBooks() {
+      clearTauriIpcCache();
       const rows = await diagnoseWorldbookSources();
       // 诊断顺便把清单刷出来
       await refreshWorldbookNames(true);

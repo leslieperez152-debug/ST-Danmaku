@@ -336,6 +336,11 @@ export async function diagnoseWorldbookSources() {
     }
   }
 
+  // Tauri IPC（TauriTavern 的正路）
+  record('Tauri IPC 是否可用', tauriIpcInfo());
+  const viaTauri = await fetchWorldbookListViaTauri();
+  for (const row of viaTauri.log) record(`IPC ${row.cmd}`, row.result);
+
   // ctx 上的数组字段
   const fields = ['worldInfoList', 'world_info_list', 'world_names', 'worldNames'];
   const found = fields.filter((f) => Array.isArray(ctx?.[f]) && ctx[f].length);
@@ -366,6 +371,109 @@ export async function diagnoseWorldbookSources() {
 
   record('最终清单', bookCache.length ? `${bookCache.length} 本` : '0 本（列表会是空的）');
   return rows;
+}
+
+/**
+ * 直接调 Tauri 的 IPC（TauriTavern 用它给前端提供世界书列表）。
+ *
+ * 为什么需要这条：TT 的原生界面是 invoke("list_world_infos") 之类拿列表的，
+ * **根本没有 `/api/worldinfo/list` 这个 HTTP 路由**（我在它的可执行文件里确认过），
+ * `getContext()` 也不暴露世界书名数组。而 `window.__TAURI__` / `__TAURI_INTERNALS__`
+ * 是全局可用的，所以从扩展里直接 invoke 是可行的。
+ *
+ * 命令名是从 TT 的可执行文件里读出来的（get_world_info / get_world_infos_batch 等），
+ * 但不同版本可能有出入，所以逐个试，返回第一个能用的结果。
+ */
+let tauriIpcCache = null; // { invoke, via } 或 false（确认不可用）
+
+function getTauriInvoke() {
+  if (tauriIpcCache) return tauriIpcCache;
+  const w = globalThis.window || globalThis;
+  // 真实浏览器里 window === globalThis，但为了在测试环境 / 特殊宿主里也稳，
+  // 两边都查一遍。
+  const roots = [w, globalThis].filter((r, i, arr) => r && arr.indexOf(r) === i);
+  for (const root of roots) {
+    const candidates = [
+      [root.__TAURI__?.core?.invoke, root.__TAURI__?.core, '__TAURI__.core.invoke'],
+      [root.__TAURI__?.invoke, root.__TAURI__, '__TAURI__.invoke'],
+      [root.__TAURI_INTERNALS__?.invoke, root.__TAURI_INTERNALS__, '__TAURI_INTERNALS__.invoke'],
+    ];
+    for (const [fn, owner, via] of candidates) {
+      if (typeof fn === 'function') {
+        tauriIpcCache = { invoke: fn.bind(owner), via };
+        return tauriIpcCache;
+      }
+    }
+  }
+  tauriIpcCache = false;
+  return false;
+}
+
+/** 把各种可能的返回结构归一成 [{name, fileId}] */
+function normalizeBookList(data) {
+  if (!data) return [];
+  const arr = Array.isArray(data)
+    ? data
+    : Array.isArray(data.world_infos)
+      ? data.world_infos
+      : Array.isArray(data.items)
+        ? data.items
+        : Array.isArray(data.names)
+          ? data.names
+          : Array.isArray(data.data)
+            ? data.data
+            : null;
+  if (!arr) return [];
+  return arr
+    .map((it) => {
+      if (typeof it === 'string') return { name: it, fileId: it };
+      const name = String(it?.name ?? it?.world_info_name ?? it?.file_id ?? it?.filename ?? it?.id ?? '').trim();
+      const fileId = String(it?.file_id ?? it?.filename ?? it?.name ?? name).trim();
+      return { name, fileId: fileId || name };
+    })
+    .filter((it) => it.name);
+}
+
+/**
+ * 走 Tauri IPC 拿世界书清单。
+ * @returns {Promise<{entries:object[], log:object[]}|null>} 全部失败时返回 null
+ */
+export async function fetchWorldbookListViaTauri() {
+  const invoke = getTauriInvoke();
+  const log = [];
+  if (!invoke) {
+    log.push({ cmd: '(Tauri IPC)', result: '❌ 没有 __TAURI__.core.invoke（不是 Tauri 客户端？）' });
+    return { entries: [], log };
+  }
+
+  // 逐个试：先无参，再补一个 args 参数（有些命令要求必须有对象）
+  for (const cmd of ['list_world_infos', 'get_world_infos', 'get_world_infos_batch', 'db_list_worldbooks', 'list_worldbooks']) {
+    for (const args of [undefined, {}]) {
+      try {
+        const data = await invoke.invoke(cmd, args);
+        const entries = normalizeBookList(data);
+        if (entries.length) {
+          log.push({ cmd: `${cmd}${args ? '(args={})' : ''}`, result: `✅ ${entries.length} 本：${entries.slice(0, 5).map((e) => e.name).join('、')}` });
+          return { entries, log };
+        }
+        log.push({ cmd: `${cmd}${args ? '(args={})' : ''}`, result: `⚠️ 调通了但没解析出书名：${JSON.stringify(data)?.slice(0, 100)}` });
+      } catch (e) {
+        log.push({ cmd: `${cmd}${args ? '(args={})' : ''}`, result: `❌ ${String(e?.message || e).slice(0, 70)}` });
+      }
+    }
+  }
+  return { entries: [], log };
+}
+
+/** 让 IPC 探测结果可被诊断报告使用 */
+export function tauriIpcInfo() {
+  const t = getTauriInvoke();
+  return t ? `✅ 可用（${t.via}）` : '❌ 不可用';
+}
+
+/** 清掉 IPC 探测缓存（诊断/重新查找时用，避免一次失败被永久记住） */
+export function clearTauriIpcCache() {
+  tauriIpcCache = null;
 }
 
 /**
@@ -414,20 +522,25 @@ export async function refreshWorldbookNames(force = false) {
     }
   }
 
-  // ③ 服务端列目录（ST 上是标准路由；某些客户端可能没有）
+  // ③ Tauri IPC（TauriTavern 的正路：它没有 /api/worldinfo/list）
+  if (!entries) {
+    const viaTauri = await fetchWorldbookListViaTauri();
+    if (viaTauri && viaTauri.entries.length) entries = viaTauri.entries;
+  }
+
+  // ④ 服务端列目录（SillyTavern 上是标准路由）
   if (!entries) entries = await fetchWorldbookListViaApi();
 
-  // ④ 从角色卡绑定收集（不依赖任何接口，客户端上实测最稳）
+  // ⑤ 从角色卡绑定收集（不依赖任何接口，但需要卡上绑了书）
   if (!entries || !entries.length) {
     const fromCards = collectWorldbooksFromCharacters();
     if (fromCards.length) {
-      // 收集到的名字再用 loadWorldInfo 验一遍，确保是真能读的书
       const probed = await probeWorldbookNames(fromCards.map((b) => b.name));
       entries = probed.length ? probed : fromCards;
     }
   }
 
-  // ⑤ ctx 上旧版本的数组字段
+  // ⑥ ctx 上旧版本的数组字段
   if (!entries || !entries.length) {
     try {
       const list = ctx?.worldInfoList || ctx?.world_info_list || ctx?.world_names || ctx?.worldNames || [];

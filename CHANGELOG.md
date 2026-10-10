@@ -1,5 +1,35 @@
 # 更新记录
 
+## v0.1.6
+
+### 修复
+- **TauriTavern 上无论如何都列不出世界书**：我在 TT 的可执行文件里确认了根因 ——
+  **它根本没有 `/api/worldinfo/list` 这个 HTTP 路由**，世界书列表是通过 Tauri IPC
+  （`invoke("get_world_info" / "get_world_infos_batch" ...)`）从后端取的。
+  而 `getContext()` 也不暴露世界书名数组。所以之前那几条路在 TT 上**全部必然失败**，
+  列表恒为空 —— 列表为空时世界书模块只显示一句提示、不渲染勾选框，
+  看起来就像"根本没这个功能"。
+  现在新增一条**直连 Tauri IPC** 的途径：`window.__TAURI__.core.invoke` /
+  `__TAURI_INTERNALS__.invoke`，按候选命令名逐个试（`list_world_infos`、
+  `get_world_infos_batch` 等，命令名取自 TT 可执行文件），并把各种返回结构
+  （字符串数组 / `items` / `names` / `world_infos` / 带 `name`+`file_id` 的对象数组）
+  都归一成插件内部格式。
+- 顺带修正：`__TAURI__` 在 `window` 与 `globalThis` 上都查一遍，避免宿主差异。
+
+### 说明
+- 在没有打开任何角色卡、也没有开启全局世界书时，清单确实是 0 本 —— 这是正常的，
+  不是故障。现在 TT 上会通过 IPC 列出**全部**世界书，与卡和全局开关无关，
+  所以你可以自由多选。
+
+### 自检
+- 124 项自检全部通过。新增覆盖：**模拟 TauriTavern**
+  （断掉 HTTP 路由 + 清空 ctx 字段 + 连一张卡都没有，仅靠 Tauri IPC 拿到清单）、
+  IPC 返回的 6 种结构都能解析、文件名与显示名分离、非 Tauri 环境下这一路安静失败。
+
+---
+
+## v0.1.5
+
 ## v0.1.5
 
 ### 修复

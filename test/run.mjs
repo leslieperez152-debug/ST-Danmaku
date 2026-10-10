@@ -1884,6 +1884,89 @@ await test('从角色卡收集：兼容卡自带世界书与附加世界书', ()
   mockContext.characters = savedChars;
 });
 
+await test('【TauriTavern 场景】走 Tauri IPC 拿到世界书清单（没有 HTTP 路由时）', async () => {
+  const savedFetch = globalThis.fetch;
+  const savedList = mockContext.worldInfoList;
+  const savedChars = mockContext.characters;
+  const savedTauri = globalThis.__TAURI__;
+  // 断掉 HTTP 与 ctx 两条路，模拟 TT 的真实情况
+  globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => null, text: async () => '' });
+  delete mockContext.worldInfoList;
+  mockContext.characters = []; // 连一张卡都没有
+
+  const calls = [];
+  globalThis.__TAURI__ = {
+    core: {
+      invoke: async (cmd, args) => {
+        calls.push(`${cmd}${args ? '(args)' : ''}`);
+        // 模仿 TT：只有这个命令存在，且返回带 name/file_id 的对象数组
+        if (cmd === 'get_world_infos_batch') {
+          return { world_infos: Object.keys(WORLDBOOKS).map((n) => ({ name: n, file_id: n })) };
+        }
+        throw new Error(`command ${cmd} not found`);
+      },
+    },
+  };
+  st.clearTauriIpcCache();
+
+  const books = await st.refreshWorldbookNames(true);
+  const names = books.map((b) => b.name).sort();
+  eq(names.length, 3, `应当从 IPC 拿到 3 本，实际 ${JSON.stringify(names)}`);
+  ok(calls.some((c) => c.startsWith('get_world_infos_batch')), `应当试过 get_world_infos_batch，实际 ${calls.join(', ')}`);
+  ok(calls.some((c) => c.startsWith('list_world_infos')), '应当把多个候选命令名都试一遍');
+
+  // 文件名映射也要对
+  eq(st.resolveWorldbookFileId('大书'), '大书');
+
+  globalThis.__TAURI__ = savedTauri;
+  globalThis.fetch = savedFetch;
+  mockContext.worldInfoList = savedList;
+  mockContext.characters = savedChars;
+  st.clearTauriIpcCache();
+  await st.refreshWorldbookNames(true);
+});
+
+await test('IPC 返回的各种结构都能解析', async () => {
+  const savedTauri = globalThis.__TAURI__;
+  const cases = [
+    ['字符串数组', ['甲', '乙']],
+    ['items 包装', { items: ['甲', '乙'] }],
+    ['names 包装', { names: ['甲', '乙'] }],
+    ['对象数组(name/file_id)', [{ name: '甲', file_id: '甲文件' }]],
+    ['对象数组(filename)', [{ filename: '丙' }]],
+    ['world_infos 包装', { world_infos: [{ name: '丁' }] }],
+  ];
+  for (const [label, payload] of cases) {
+    globalThis.__TAURI__ = { core: { invoke: async () => payload } };
+    st.clearTauriIpcCache();
+    const res = await st.fetchWorldbookListViaTauri();
+    eq(res.entries.length, 2 === payload.length ? 2 : res.entries.length, `${label} 解析数量异常`);
+    ok(res.entries.length >= 1, `${label} 应当解析出至少一本，实际 ${res.entries.length}`);
+  }
+  // 文件名与显示名分离
+  globalThis.__TAURI__ = { core: { invoke: async () => [{ name: '显示名', file_id: '文件名' }] } };
+  st.clearTauriIpcCache();
+  const res = await st.fetchWorldbookListViaTauri();
+  eq(res.entries[0].name, '显示名');
+  eq(res.entries[0].fileId, '文件名');
+
+  globalThis.__TAURI__ = savedTauri;
+  st.clearTauriIpcCache();
+});
+
+await test('不是 Tauri 客户端时，IPC 那一路安静失败', async () => {
+  const savedTauri = globalThis.__TAURI__;
+  delete globalThis.__TAURI__;
+  delete globalThis.__TAURI_INTERNALS__;
+  st.clearTauriIpcCache();
+  const res = await st.fetchWorldbookListViaTauri();
+  eq(res.entries.length, 0);
+  ok(res.log[0].result.includes('没有'), res.log[0].result);
+  eq(st.tauriIpcInfo().includes('❌'), true);
+  if (savedTauri) globalThis.__TAURI__ = savedTauri;
+  st.clearTauriIpcCache();
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {
