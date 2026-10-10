@@ -8,7 +8,7 @@
  */
 
 import { buildPalette } from './color.js';
-import { speedOfItem } from './danmaku.js';
+import { speedOfItem, delayOfItem } from './danmaku.js';
 
 const HOST_CLASS = 'std-frame';
 const LANE_PAD = 6;
@@ -195,7 +195,10 @@ export function distributeLanes(items, lanes) {
 
 /** 把弹幕播起来（每次重播都重新算位置，所以缩放/改字号后依然正确） */
 export function playFrame(frame, opts = {}) {
-  const { doc = frame.el.ownerDocument, appearance = {}, stagger = 0.22 } = opts;
+  const { doc = frame.el.ownerDocument, appearance = {}, stagger } = opts;
+  // 基准间隔：优先用调用方给的，其次用外观设置里的，最后退回默认值
+  const settle = Number(stagger) > 0 ? Number(stagger) : Number(appearance.stagger) > 0 ? Number(appearance.stagger) : 0.22;
+  const staggerSec = settle;
   if (!frame || !frame.nodes) return;
   stopFrame(frame);
   frame.stage.innerHTML = '';
@@ -217,22 +220,29 @@ export function playFrame(frame, opts = {}) {
 
   frame.nodes.forEach((node, i) => {
     const clone = node.cloneNode(true);
-    const dur = durationFor(frame.items && frame.items[i]);
+    const item = frame.items && frame.items[i];
+    const dur = durationFor(item);
+    // 出现时刻：优先用每条自己定好的（带浮动，像真人陆陆续续发出来），没有就退回等间隔
+    const delay = delayOfItem(item, i, staggerSec);
     clone.style.animationDuration = `${dur.toFixed(2)}s`;
-    clone.style.animationDelay = `${(i * stagger).toFixed(2)}s`;
+    clone.style.animationDelay = `${delay.toFixed(2)}s`;
     clone.style.visibility = 'hidden';
     runner.appendChild(clone);
     const timer = setTimeout(() => {
       clone.style.visibility = '';
       clone.classList.add('flying');
-    }, i * stagger * 1000);
+    }, delay * 1000);
     frame.timers.push(timer);
   });
 
-  // 整批播完的时刻要按"最慢的那条"算，否则会提前收尾、把还在飞的弹幕切掉
-  const durations = frame.nodes.map((_, i) => durationFor(frame.items && frame.items[i]));
-  const maxDuration = durations.length ? Math.max(...durations) : 4;
-  const totalMs = (frame.nodes.length * stagger + maxDuration) * 1000 + 400;
+  // 整批播完的时刻要按"最晚结束的那条"算，否则会提前收尾、把还在飞的弹幕切掉。
+  // 出现时刻也要算进去（最后一条可能被往后抖了）。
+  const endTimes = frame.nodes.map((_, i) => {
+    const item = frame.items && frame.items[i];
+    return delayOfItem(item, i, staggerSec) + durationFor(item);
+  });
+  const maxEnd = endTimes.length ? Math.max(...endTimes) : 4;
+  const totalMs = maxEnd * 1000 + 400;
   const doneTimer = setTimeout(() => finishFrame(frame, appearance), totalMs);
   frame.timers.push(doneTimer);
 }

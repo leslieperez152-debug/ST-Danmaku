@@ -9,7 +9,7 @@
  *   · 鼠标离开就恢复穿透。
  */
 
-import { speedOfItem } from './danmaku.js';
+import { speedOfItem, delayOfItem } from './danmaku.js';
 
 export const OVERLAY_ID = 'std-overlay';
 
@@ -152,7 +152,7 @@ export function playOverlay(doc, items, opts = {}) {
   const root = ensureOverlay(doc);
   const stage = root.__std.stage;
   const app = opts.appearance || {};
-  const stagger = opts.stagger ?? 0.22;
+  const stagger = Number(opts.stagger) > 0 ? Number(opts.stagger) : Number(app.stagger) > 0 ? Number(app.stagger) : 0.22;
   const countEl = root.__std.count;
 
   // 清掉上一批的定时器
@@ -174,7 +174,8 @@ export function playOverlay(doc, items, opts = {}) {
     node.style.top = `${(i % lanes) * laneH}px`;
     node.style.color = item.color || '#fff';
     node.style.animationDuration = `${durationFor(item).toFixed(2)}s`;
-    node.style.animationDelay = `${(i * stagger).toFixed(2)}s`;
+    // 出现时刻：优先用每条自己定好的（带浮动），没有就退回等间隔
+    node.style.animationDelay = `${delayOfItem(item, i, stagger).toFixed(2)}s`;
 
     if (item.昵称) {
       const n = doc.createElement('span');
@@ -191,10 +192,11 @@ export function playOverlay(doc, items, opts = {}) {
 
   if (countEl) countEl.textContent = `${items.length} 条`;
 
-  // 按最慢的那条算收尾时刻，否则会提前把还在飞的弹幕清掉
-  const durations = items.map((it) => durationFor(it));
-  const maxDuration = durations.length ? Math.max(...durations) : 4;
-  const totalMs = (items.length * stagger + maxDuration) * 1000 + 300;
+  // 按"最晚结束的那条"算收尾时刻（出现时刻 + 飞行时长），
+  // 否则会提前把还在飞的弹幕清掉
+  const endTimes = items.map((it, i) => delayOfItem(it, i, stagger) + durationFor(it));
+  const maxEnd = endTimes.length ? Math.max(...endTimes) : 4;
+  const totalMs = maxEnd * 1000 + 300;
   const timer = setTimeout(() => {
     if (app.overlayFade === true) {
       // 用户明确要求"播完淡出"：整层淡下去（层还在，鼠标移进去仍能拖动）
@@ -209,7 +211,7 @@ export function playOverlay(doc, items, opts = {}) {
   }, totalMs);
   root.__std.timers.push(timer);
 
-  return { duration: maxDuration, totalMs, lanes };
+  return { duration: maxEnd, totalMs, lanes };
 }
 
 /**

@@ -46,7 +46,7 @@ import {
   toast,
 } from './st.js';
 import { scanWorldbooks, estimateScanCost } from './scan.js';
-import { generateBatch, buildViewerPool, buildStoryContext, pickGags, assignSpeeds } from './danmaku.js';
+import { generateBatch, buildViewerPool, buildStoryContext, pickGags, assignSpeeds, assignDelaysToItems } from './danmaku.js';
 import { chat, chatJson, fetchModelList, fetchModelListDirect, resolveStTarget } from './llm.js';
 import { buildPalette, sampleBackgroundLuminance, sampleBackground, shade } from './color.js';
 import {
@@ -348,7 +348,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       /* 每条弹幕定一个自己的飞行速度（在设定速度上浮动），
          定死在数据里而不是渲染时随机 —— 这样重播和静态列表的快慢都一致 */
       items = assignSpeeds(items, s.appearance.speed, s.appearance.speedVariance);
-      // assignSpeeds 返回新对象，颜色要跟着带上（它做了浅拷贝，颜色已在里面）
+      // 出现时刻也定死在数据里（同样为了重播一致）；基准间隔就是当前的 stagger
+      items = assignDelaysToItems(items, s.appearance.stagger, s.appearance.delayVariance);
 
       /* 记账 */
       const batchNo = ++state.runtime.batchNo;

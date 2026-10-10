@@ -2799,6 +2799,89 @@ await test('设置栏也有「重播上一批」，且走的是正确的接口',
   app.destroy();
 });
 
+/* ───────────── 出现时刻浮动 ───────────── */
+
+section('13h. 出现时刻浮动（像真人陆陆续续发出来）');
+
+await test('出现时刻：默认不等间隔，但绝不乱序、也不会完全重叠', () => {
+  const items = Array.from({ length: 30 }, (_, i) => ({ 内容: `第${i}条` }));
+  let seed = 7;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const out = danmaku.assignDelaysToItems(items, 0.22, 35, rand);
+  const delays = out.map((x) => x.延迟);
+
+  eq(delays.length, items.length, '每条都要有出现时刻');
+  ok(new Set(delays).size > 1, `不该全部等间隔：${delays.slice(0, 8).join(',')}`);
+
+  for (let i = 1; i < delays.length; i += 1) {
+    ok(delays[i] >= delays[i - 1], `第 ${i} 条不该早于上一条：${delays[i - 1]} → ${delays[i]}`);
+  }
+  for (let i = 1; i < delays.length; i += 1) {
+    const gap = delays[i] - delays[i - 1];
+    ok(gap >= 0.22 * 0.25 - 1e-6, `相邻两条间隔太小（会像重叠）：${gap.toFixed(3)}`);
+  }
+  const last = delays[delays.length - 1];
+  ok(last <= (delays.length - 1 + 0.35) * 0.22 + 1e-6, `最后一条被拖太远：${last}`);
+});
+
+await test('出现时刻：浮动为 0 时严格等间隔', () => {
+  const items = Array.from({ length: 5 }, (_, i) => ({ 内容: `x${i}` }));
+  const out = danmaku.assignDelaysToItems(items, 0.5, 0);
+  eq(out.map((x) => x.延迟).join(','), '0,0.5,1,1.5,2');
+});
+
+await test('出现时刻：间隔为 0 时全部同时出现（并且不崩）', () => {
+  const out = danmaku.assignDelaysToItems([{ 内容: 'a' }, { 内容: 'b' }], 0, 50);
+  eq(out.map((x) => x.延迟).join(','), '0,0');
+  eq(danmaku.assignDelays(0, 0.22, 50).length, 0, '空输入不该崩');
+});
+
+await test('delayOfItem：优先用每条自己的时刻，没有就按序号等间隔', () => {
+  eq(danmaku.delayOfItem({ 延迟: 1.25 }, 3, 0.2), 1.25);
+  eq(danmaku.delayOfItem({}, 3, 0.2), 0.6000000000000001, '没有就用 index × base');
+  eq(danmaku.delayOfItem(null, 0, 0.2), 0);
+  eq(danmaku.delayOfItem({ 延迟: -5 }, 2, 0.5), 1, '负值应当被忽略');
+});
+
+await test('弹幕框按每条自己的出现时刻排布（不早于上一条）', () => {
+  const d = useDoc(createMiniDocument());
+  const chat = d.createElement('div');
+  chat.id = 'chat';
+  d.body.appendChild(chat);
+  const mes = d.createElement('div');
+  mes.className = 'mes';
+  mes.setAttribute('mesid', '1');
+  chat.appendChild(mes);
+
+  const items = [
+    { 昵称: '甲', 内容: 'a', 速度: 110, 延迟: 0 },
+    { 昵称: '乙', 内容: 'b', 速度: 110, 延迟: 0.05 },
+    { 昵称: '丙', 内容: 'c', 速度: 110, 延迟: 0.9 },
+  ];
+  const frame = frameMod.createFrame({ doc: d, appearance: { speed: 110 }, luminance: 0.1, meta: { batchNo: 1, messageId: 1 }, items });
+  frameMod.mountFrame({ doc: d, messageId: 1, frame });
+  frameMod.playFrame(frame, { doc: d, appearance: { speed: 110 }, stagger: 0.22 });
+
+  const delays = frame.nodes.map((n) => Number(String(n.style.animationDelay).replace('s', '')));
+  eq(delays[0], 0, '第一条应当立刻出现');
+  ok(delays[1] < 0.22, `第二条应当用了自己的时刻（早于等间隔）：${delays[1]}`);
+  ok(delays[2] > 0.5, `第三条应当用了自己的时刻：${delays[2]}`);
+  for (let i = 1; i < delays.length; i += 1) ok(delays[i] >= delays[i - 1], '不许乱序');
+  frameMod.stopFrame(frame);
+});
+
+await test('延迟设置真的进了设置（stagger 不再是 undefined）', () => {
+  const s = store.defaultSettings();
+  ok(typeof s.appearance.stagger === 'number' && s.appearance.stagger > 0, `stagger 必须有默认值，实际 ${s.appearance.stagger}`);
+  ok(typeof s.appearance.delayVariance === 'number', 'delayVariance 必须有默认值');
+  const bad = store.normalizeSettings({ appearance: { stagger: -1, delayVariance: 999 } });
+  ok(bad.appearance.stagger > 0, `stagger 不该被归一成 0 或负数，实际 ${bad.appearance.stagger}`);
+  ok(bad.appearance.delayVariance <= 100, `delayVariance 应当被夹到 100，实际 ${bad.appearance.delayVariance}`);
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

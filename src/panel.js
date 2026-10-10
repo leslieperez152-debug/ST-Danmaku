@@ -316,6 +316,16 @@ function pages(app) {
             number('appearance.speedVariance', a.speedVariance, 0, 60, 1),
             '每条弹幕在自己的速度上随机浮动这么多，让它们不要整齐划一。0 = 全部同速',
           ),
+          row2(
+            '出现间隔（秒）',
+            number('appearance.stagger', a.stagger, 0.02, 2, 0.02),
+            '相邻两条之间的基准间隔。0.22 大约是一秒出来四五条',
+          ),
+          row2(
+            '间隔浮动（±%）',
+            number('appearance.delayVariance', a.delayVariance, 0, 100, 5),
+            '出现时刻也随机前后浮动，像真人陆陆续续发出来。0 = 严格等间隔',
+          ),
           row2('同轨间隔（px）', number('appearance.gap', a.gap, 0, 200, 1)),
           row2('整块不透明度', range('appearance.opacity', a.opacity, 0.1, 1, 0.05), '整块弹幕框（含幕布与文字）一起变'),
           row2('显示轨道序号', toggle('appearance.showMeta', a.showMeta)),

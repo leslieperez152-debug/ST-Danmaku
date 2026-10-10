@@ -499,6 +499,41 @@ export function buildStoryContext(messages, { rounds = 2, charBudget = 6000 } = 
 }
 
 /**
+ * 给一批弹幕安排出现时刻（秒），带浮动。
+ *
+ * 真实弹幕不是等间隔出来的：有时挤在一起刷屏，有时空一下。
+ * 所以先算出"理想等间隔时刻"，再加抖动。
+ *
+ * 两个约束必须守住，否则会看起来像掉帧或卡顿：
+ *   · **不乱序** —— 后一条不早于前一条出现（用下界夹住）；
+ *   · **不完全重叠** —— 相邻两条至少间隔 base 的一个小比例（默认 25%）。
+ *
+ * @param {number} n           条数
+ * @param {number} base        基准间隔（秒）
+ * @param {number} jitterPct   抖动幅度（百分比，相对 base，0~100）
+ * @param {()=>number} [rand]  随机源
+ * @returns {number[]} 每条的出现时刻（秒）
+ */
+export function assignDelays(n, base, jitterPct, rand = Math.random) {
+  const count = Math.max(0, Math.floor(Number(n) || 0));
+  const b = Math.max(0, Number(base) || 0);
+  const pct = Math.min(100, Math.max(0, Number(jitterPct) || 0));
+  const out = [];
+  if (!count) return out;
+  if (!b) return Array.from({ length: count }, () => 0);
+  if (!pct) return Array.from({ length: count }, (_, i) => i * b);
+
+  const headroom = pct / 100;
+  const minGap = b * 0.25; // 相邻两条的最小间隔
+  for (let i = 0; i < count; i += 1) {
+    const lo = i === 0 ? 0 : out[i - 1] + minGap;
+    const hi = Math.max(lo, (i + headroom) * b);
+    out.push(lo + rand() * (hi - lo));
+  }
+  return out;
+}
+
+/**
  * 给每条弹幕定一个自己的飞行速度：以设定速度为基准上下浮动。
  *
  * 为什么要"定死在数据里"而不是渲染时随机：这样**重播和静态列表的快慢都一致**，
@@ -518,6 +553,23 @@ export function assignSpeeds(items, baseSpeed, variancePct, rand = Math.random) 
     const factor = 1 + ((rand() * 2 - 1) * pct) / 100;
     return { ...it, 速度: Math.max(20, Math.round(base * factor)) };
   });
+}
+
+/**
+ * 把出现时刻写进每条弹幕（存在数据里，重播时保持一致）。
+ * assignDelays 已经保证不乱序，所以按序号直接对应即可。
+ */
+export function assignDelaysToItems(items, base, jitterPct, rand = Math.random) {
+  const list = items || [];
+  const delays = assignDelays(list.length, base, jitterPct, rand);
+  return list.map((it, i) => ({ ...it, 延迟: Number((delays[i] || 0).toFixed(2)) }));
+}
+
+/** 取一条弹幕的出现时刻（秒）：优先用它自己定好的，否则按序号等间隔 */
+export function delayOfItem(item, index, base) {
+  const own = Number(item?.延迟);
+  if (Number.isFinite(own) && own >= 0) return own;
+  return Math.max(0, Number(index) || 0) * Math.max(0, Number(base) || 0);
 }
 
 /** 取一条弹幕的飞行速度：优先用它自己定好的，否则退回基准 */
