@@ -101,6 +101,7 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
     rootEl.addEventListener('change', onFieldChange);
     rootEl.addEventListener('input', onFieldChange);
+    rootEl.addEventListener('click', onFieldChange);
     rootEl.addEventListener('click', onClick);
 
     ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'scan', 'cleared'].forEach((evt) => {
@@ -113,24 +114,66 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
   function onFieldChange(ev) {
     const el = ev.target;
-    const path = el?.getAttribute?.('data-std-dw');
+    if (!el) return;
+
+    // 世界书勾选：单独一条通路
+    const book = el.getAttribute?.('data-std-book');
+    if (book !== null && book !== undefined) {
+      applyBookSelection();
+      return;
+    }
+
+    const path = el.getAttribute?.('data-std-dw');
     if (!path) return;
 
-    // 用"属性 + 属性值"双重判断，而不是只信 el.type：
-    // 某些环境下 IDL 属性（el.type / el.value）拿不到，只信它会导致改动被静默忽略。
-    const kind = el.type || el.getAttribute?.('type') || (el.tagName === 'INPUT' ? 'text' : el.tagName === 'TEXTAREA' ? 'textarea' : '');
+    // click 只在真正点到控件本身时才当输入处理，避免误触发
+    const kind = resolveKind(el);
+    if (ev.type === 'click' && !['checkbox', 'radio', 'range', 'select'].includes(kind)) return;
     let value;
     if (kind === 'checkbox' || kind === 'radio') {
-      value = 'checked' in el ? !!el.checked : el.getAttribute?.('checked') !== null;
+      value = isChecked(el);
     } else if (kind === 'number' || kind === 'range') {
-      const raw = el.value !== undefined && el.value !== '' ? el.value : el.getAttribute?.('value');
+      const raw = readValue(el);
       value = Number(raw);
       if (!Number.isFinite(value)) return; // 输入框被清空时不要写坏设置
     } else {
-      value = el.value !== undefined ? el.value : el.getAttribute?.('value') ?? '';
+      value = readValue(el);
     }
-
     app.updateSettings({ [path]: value });
+    render();
+  }
+
+  /** 元素属于哪种输入控件 */
+  function resolveKind(el) {
+    const attrType = el.getAttribute?.('type');
+    if (attrType) return attrType.toLowerCase();
+    if (typeof el.type === 'string' && el.type) return el.type.toLowerCase();
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag === 'TEXTAREA') return 'textarea';
+    if (tag === 'SELECT') return 'select';
+    if (tag === 'INPUT') return 'text';
+    return 'text';
+  }
+
+  /** 复选框是否勾上：优先读属性设置器，退回读属性 */
+  function isChecked(el) {
+    if (typeof el.checked === 'boolean') return el.checked;
+    return el.getAttribute?.('checked') !== null;
+  }
+
+  /** 读输入值 */
+  function readValue(el) {
+    if (typeof el.value === 'string' && el.value !== '') return el.value;
+    return el.getAttribute?.('value') ?? '';
+  }
+
+  /** 把世界书勾选写回设置（勾了任何一本 = 切到手动模式） */
+  function applyBookSelection() {
+    const names = [...rootEl.querySelectorAll('[data-std-book]')]
+      .filter((n) => isChecked(n))
+      .map((n) => n.getAttribute('data-std-book'))
+      .filter(Boolean);
+    app.updateSettings({ scan: { sources: names } });
     render();
   }
 

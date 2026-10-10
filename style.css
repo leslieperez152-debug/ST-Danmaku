@@ -289,36 +289,105 @@
   background: linear-gradient(135deg, transparent 45%, rgba(255, 255, 255, 0.6) 46%, rgba(255, 255, 255, 0.6) 60%, transparent 61%);
 }
 
-/* ───────────── 悬浮球 ───────────── */
+/* ───────────── 悬浮球 ─────────────
+   半透明渐变小球，不带任何文字。
+   两层渐变叠加：底层是缓慢旋转的锥形渐变（像直播信号在转），
+   上层是左上高光 + 右下暗部的球面感，再叠一点透明度让它透出背景。 */
 
 #std-ball {
   position: fixed;
   right: 16px;
   bottom: 168px;
-  width: 44px;
-  height: 44px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 19px;
-  font-weight: 700;
-  color: #ffe9a8;
   cursor: grab;
   user-select: none;
   z-index: 99995;
-  background: radial-gradient(circle at 32% 28%, #46538a, #131828);
-  border: 1px solid rgba(255, 210, 120, 0.55);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
   touch-action: none;
+  overflow: hidden;
+  opacity: 0.72;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: rgba(20, 24, 40, 0.35);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.45),
+    0 0 12px rgba(140, 180, 255, 0.32),
+    inset 0 1px 2px rgba(255, 255, 255, 0.45);
+  animation: std-ball-glow 3.4s ease-in-out infinite;
+  transition: opacity 0.25s ease, transform 0.15s ease;
+}
+
+/* 旋转层：锥形渐变缓慢转动 = 像直播信号在跑 */
+#std-ball::before {
+  content: '';
+  position: absolute;
+  left: -30%;
+  top: -30%;
+  width: 160%;
+  height: 160%;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 122, 182, 0.95),
+    rgba(150, 130, 255, 0.95),
+    rgba(90, 200, 255, 0.95),
+    rgba(120, 240, 200, 0.95),
+    rgba(255, 214, 130, 0.95),
+    rgba(255, 122, 182, 0.95)
+  );
+  animation: std-ball-spin 12s linear infinite;
+}
+
+/* 球面高光层：左上亮、右下暗，做出玻璃球的立体感 */
+#std-ball::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 26%, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0) 44%),
+    radial-gradient(circle at 74% 80%, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0) 58%);
 }
 
 #std-ball:hover {
-  filter: brightness(1.2);
+  opacity: 1;
+  transform: scale(1.08);
 }
 
 #std-ball:active {
   cursor: grabbing;
+  transform: scale(0.96);
+}
+
+/* 拖动时暂停动画，避免手一按球就跑 */
+#std-ball.dragging::before,
+#std-ball.dragging::after {
+  animation-play-state: paused;
+}
+
+@keyframes std-ball-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes std-ball-glow {
+  0%,
+  100% {
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), 0 0 10px rgba(140, 180, 255, 0.28),
+      inset 0 1px 2px rgba(255, 255, 255, 0.45);
+  }
+  50% {
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5), 0 0 20px rgba(170, 150, 255, 0.55),
+      inset 0 1px 2px rgba(255, 255, 255, 0.55);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #std-ball,
+  #std-ball::before {
+    animation: none;
+  }
 }
 
 /* ───────────── 设置面板 ───────────── */

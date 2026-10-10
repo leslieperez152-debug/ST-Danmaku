@@ -45,6 +45,7 @@ export function defaultSettings() {
     /* 世界书扫描 */
     scan: {
       sources: null, // null = 自动（当前卡绑定的 + 全局开启的）；数组 = 手动指定世界书名
+      followCard: true, // 换卡时自动切回"跟随这张卡绑定的世界书"（手动勾选不会被带到别的卡上）
       entryCharBudget: 40000, // 取样预算：从世界书里最多读多少字
       commentOnly: false, // true = 只拿条目名/备注做索引，不读正文（极省，但档案会浅）
       summaryCharBudget: 1200, // 总结后的档案字数上限
@@ -61,7 +62,8 @@ export function defaultSettings() {
     /* API */
     api: {
       route: 'st', // 'st' = 走酒馆后端（能复用酒馆里已存的 key）；'direct' = 直连自填地址
-      source: 'custom', // 走酒馆后端时的 chat_completion_source
+      sourceMode: 'auto', // 'auto' = 跟随酒馆当前连接（推荐）；'fixed' = 固定用下面这个源
+      source: 'openai', // sourceMode='fixed' 时生效
       proxyPreset: '', // 酒馆代理预设名（填了就优先用它）
       reverseProxy: '', // 覆盖地址（走酒馆后端时用）
       model: '', // 留空 = 用酒馆当前模型 / 直连必须填
@@ -195,6 +197,7 @@ export function normalizeSettings(s) {
   out.scan.summaryCharBudget = num(out.scan.summaryCharBudget, 1200, 100, 20000);
   out.scan.commentOnly = asBool(out.scan.commentOnly, false);
   out.scan.includeDisabled = asBool(out.scan.includeDisabled, false);
+  out.scan.followCard = asBool(out.scan.followCard, true);
   if (!Array.isArray(out.scan.sources)) out.scan.sources = null;
 
   out.audience.poolSize = num(out.audience.poolSize, 10, 0, 60);
@@ -202,6 +205,7 @@ export function normalizeSettings(s) {
   out.audience.fourthWall = num(out.audience.fourthWall, 20, 0, 100);
 
   if (!['st', 'direct'].includes(out.api.route)) out.api.route = 'st';
+  if (!['auto', 'fixed'].includes(out.api.sourceMode)) out.api.sourceMode = 'auto';
   out.api.temperature = num(out.api.temperature, 1.05, 0, 2);
   out.api.maxTokens = num(out.api.maxTokens, 2000, 64, 32000);
   out.api.timeoutMs = num(out.api.timeoutMs, 120000, 5000, 600000);
@@ -338,6 +342,7 @@ export function createRuntime() {
     roundNo: 0, // 已处理轮次（用于 everyNRounds）
     viewers: [], // 观众名册
     viewersProfileKey: '', // 名册是按哪个档案生成的
+    viewersCardName: '', // 名册属于哪张卡（换卡就必须重做，否则会串味）
     history: [], // [{ batchNo, anchorId, at, items:[{id,text,tone,ref,color}], played:false }]
     lastInjection: '',
     lastError: '',
@@ -354,6 +359,7 @@ export function loadRuntime(storage) {
     rt.roundNo = num(raw.roundNo, 0, 0, 1e9);
     rt.viewers = Array.isArray(raw.viewers) ? raw.viewers : [];
     rt.viewersProfileKey = String(raw.viewersProfileKey || '');
+    rt.viewersCardName = String(raw.viewersCardName || '');
     rt.history = Array.isArray(raw.history) ? raw.history : [];
     rt.lastInjection = String(raw.lastInjection || '');
     return rt;
@@ -370,6 +376,7 @@ export function saveRuntime(storage, rt, historyKeep) {
       roundNo: rt.roundNo,
       viewers: rt.viewers,
       viewersProfileKey: rt.viewersProfileKey,
+      viewersCardName: rt.viewersCardName || '',
       history: rt.history.slice(-keep),
       lastInjection: rt.lastInjection || '',
     };
@@ -385,6 +392,7 @@ export function saveRuntime(storage, rt, historyKeep) {
           roundNo: rt.roundNo,
           viewers: rt.viewers,
           viewersProfileKey: rt.viewersProfileKey,
+          viewersCardName: rt.viewersCardName || '',
           history: [],
         }),
       );

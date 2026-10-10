@@ -72,26 +72,45 @@ function pages(app) {
           a.route === 'st'
             ? [
                 row2(
-                  'API 源',
+                  'AI 来源',
                   select(
-                    'api.source',
-                    a.source,
+                    'api.sourceMode',
+                    a.sourceMode,
                     [
-                      ['custom', 'custom（自定义 OpenAI 兼容端点）'],
-                      ['openai', 'openai'],
-                      ['deepseek', 'deepseek'],
-                      ['makersuite', 'makersuite（Gemini）'],
-                      ['openrouter', 'openrouter'],
-                      ['claude', 'claude'],
-                      ['groq', 'groq'],
-                      ['mistralai', 'mistralai'],
+                      ['auto', '自动跟随酒馆当前连接（推荐）'],
+                      ['fixed', '固定用下面的来源'],
                     ],
                     true,
                   ),
+                  app.describeAiSource(),
                 ),
+                a.sourceMode === 'fixed'
+                  ? [
+                      row2(
+                        '来源',
+                        select(
+                          'api.source',
+                          a.source,
+                          [
+                            ['custom', 'custom（自定义 OpenAI 兼容端点）'],
+                            ['openai', 'openai'],
+                            ['deepseek', 'deepseek'],
+                            ['makersuite', 'makersuite（Gemini）'],
+                            ['openrouter', 'openrouter'],
+                            ['claude', 'claude'],
+                            ['groq', 'groq'],
+                            ['mistralai', 'mistralai'],
+                          ],
+                          true,
+                        ),
+                        a.source === 'custom'
+                          ? '注意：custom 用的是酒馆里配好的自定义端点地址。没配的话会直接报错。'
+                          : '',
+                      ),
+                    ].join('')
+                  : '<div class="std-hint">自动模式下，弹幕会跟着你在酒馆里当前的连接走；你在酒馆里换了连接，弹幕也会跟着换。酒馆里已保存的 key 直接复用，不用在这里重填。</div>',
                 row2('代理预设名', text('api.proxyPreset', a.proxyPreset, '留空则不用；填了优先走它')),
                 row2('覆盖地址', text('api.reverseProxy', a.reverseProxy, '留空则用酒馆设置里的地址')),
-                '<div class="std-hint">甲路线不需要在这里填 key：酒馆后端会用它自己保存的密钥。</div>',
               ].join('')
             : [
                 row2('API 地址', text('api.direct.baseUrl', a.direct.baseUrl, '例：http://127.0.0.1:1234/v1')),
@@ -150,8 +169,22 @@ function pages(app) {
         return [
           '<div class="std-hint">扫描是三步走的，任何规模的世界书都不会一口气全塞给模型：<b>先索引</b>（只读条目名，几乎不花 token）→ <b>再按预算取样正文</b> → <b>最后总结成有字数上限的档案</b>。</div>',
           '<div class="std-sec">要读哪些世界书</div>',
+          (() => {
+            const src = app.describeWorldbookSource();
+            const warn = !src.names.length
+              ? '<div class="std-warn">这张卡没有绑定任何世界书，全局也没有开启的世界书。插件仍能出弹幕，但会走「看正文学」的路线：没有本土词汇，弹幕会比较泛。</div>'
+              : '';
+            return `${kv('跟随模式', src.mode)}${kv('当前卡', src.card || '(无卡)')}${kv(
+              '实际会读',
+              src.names.length ? src.names.join('、') : '（无）',
+            )}${warn}`;
+          })(),
           `<div class="std-books">${rows}</div>`,
           auto,
+          row2(
+            '换卡时自动跟随',
+            toggle('scan.followCard', s.scan.followCard, '开着：进哪张卡就读哪张卡绑定的世界书（手动勾选不会带到别的卡上）。关掉则保留你手动选的书'),
+          ),
           btnRow([
             { label: '恢复自动', act: 'books-auto' },
             { label: '全选', act: 'books-all' },
@@ -389,19 +422,38 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
   let ballEl = null;
   let activeTab = 'home';
   let refreshTimer = null;
+  let boundDoc = null; // 面板当前挂在哪个文档上
 
   const defs = pages(app);
 
-  function build() {
-    if (doc.getElementById(PANEL_ID)) return;
+  /** 挂载点：优先用当前文档，拿不到再退回全局 document */
+  function mountDoc() {
+    return doc && doc.body ? doc : globalThis.document;
+  }
 
-    ballEl = doc.createElement('div');
+  function build() {
+    const d = mountDoc();
+    if (!d || !d.body) return;
+    // 文档变了（重载 / 多文档环境）就重建，避免拿着已经不属于当前文档的旧节点
+    if (boundDoc && boundDoc !== d) {
+      panelEl = null;
+      bodyEl = null;
+      tabEl = null;
+      ballEl = null;
+    }
+    if (d.getElementById(PANEL_ID)) {
+      boundDoc = d;
+      return;
+    }
+    boundDoc = d;
+
+    ballEl = d.createElement('div');
     ballEl.id = BALL_ID;
     ballEl.title = '弹幕直播间 · 单击展开设置，可拖动';
-    ballEl.textContent = '弹';
-    doc.body.appendChild(ballEl);
+    // 不留任何文字：纯渐变小球
+    d.body.appendChild(ballEl);
 
-    panelEl = doc.createElement('div');
+    panelEl = d.createElement('div');
     panelEl.id = PANEL_ID;
     panelEl.className = 'std-hidden';
     panelEl.innerHTML = `
@@ -412,41 +464,48 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
         <button class="std-btn tiny" data-std-act="close">✕</button>
       </div>
       <div class="std-tabs">${defs
-        .map((d) => `<button class="std-tab" data-std-tab="${d.id}">${esc(d.label)}</button>`)
+        .map((dd) => `<button class="std-tab" data-std-tab="${dd.id}">${esc(dd.label)}</button>`)
         .join('')}</div>
       <div class="std-body"></div>
       <div class="std-foot"><span data-std-foot>就绪</span></div>
     `;
-    doc.body.appendChild(panelEl);
+    d.body.appendChild(panelEl);
 
     bodyEl = panelEl.querySelector('.std-body');
     tabEl = panelEl.querySelector('.std-tabs');
 
     /* 面板自身的拖动 */
-    makeDraggable(panelEl, panelEl.querySelector('[data-std-dragpanel]'), doc, 'std_panel_pos');
+    makeDraggable(panelEl, panelEl.querySelector('[data-std-dragpanel]'), d, 'std_panel_pos');
 
     /* 悬浮球拖动 */
-    makeDraggable(ballEl, ballEl, doc, 'std_ball_pos', () => toggle(false));
+    makeDraggable(ballEl, ballEl, d, 'std_ball_pos', () => toggle(false));
 
     panelEl.addEventListener('click', onPanelClick);
     panelEl.addEventListener('input', onFieldInput);
     panelEl.addEventListener('change', onFieldInput);
-    tabEl.addEventListener('click', (ev) => {
+    const tabs = tabEl;
+    const ball = ballEl;
+    const styles = d;
+    tabs.addEventListener('click', (ev) => {
       const id = ev.target?.getAttribute?.('data-std-tab');
       if (!id) return;
       activeTab = id;
       render();
     });
-    ballEl.addEventListener('click', () => toggle());
+    ball.addEventListener('click', () => toggle());
+
+    // 建完就先渲染一次：否则首次打开面板会是一片空白（内容只在切换页签时才填）
+    render();
   }
 
   function toggle(open) {
     if (!panelEl) build();
+    if (!panelEl) return;
     const want = open === undefined ? panelEl.classList.contains('std-hidden') : !!open;
     panelEl.classList.toggle('std-hidden', !want);
     if (want) {
       render();
-      clampIntoView(panelEl, doc);
+      clampIntoView(panelEl, boundDoc);
     }
   }
 
@@ -485,7 +544,7 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
   }
 
   /* 事件订阅：任何状态变化都尽量反映到面板 */
-  ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'cleared', 'scan'].forEach((evt) =>
+  ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'cleared', 'scan'].forEach((evt) =>
     app.on(evt, scheduleRefresh),
   );
 
@@ -614,33 +673,49 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
 
   function onFieldInput(ev) {
     const el = ev.target;
-    const path = el?.getAttribute?.('data-std-path');
-    if (path) {
-      const type = el.getAttribute('data-std-type') || 'string';
-      let value;
-      if (type === 'bool') value = !!el.checked;
-      else if (type === 'number') value = Number(el.value);
-      else value = el.value;
-      app.updateSettings(setPath({}, path, value), { silent: true });
+    if (!el) return;
 
-      // 滑块旁边的数字实时更新
-      if (el.type === 'range') {
-        const out = el.parentElement?.querySelector('.std-range-val');
-        if (out) out.textContent = el.value;
-      }
-      // 需要整页重绘的控件（切换路线 / 开关联动）即时刷新
-      if (type === 'bool' || path === 'api.route') render();
-      else updateStatus();
+    // 世界书勾选：严格判断（空名字的书也要能勾），并且 click 也要兜一次，
+    // 因为某些环境下 change 事件不一定会到达委托的父节点
+    const book = el.getAttribute?.('data-std-book');
+    if (book !== null && book !== undefined) {
+      if (ev.type === 'click' && ev.target !== el) return;
+      applyBookSelection();
       return;
     }
 
-    // 世界书勾选
-    const book = el?.getAttribute?.('data-std-book');
-    if (book) {
-      const names = [...panelEl.querySelectorAll('[data-std-book]')].filter((n) => n.checked).map((n) => n.getAttribute('data-std-book'));
-      app.updateSettings({ scan: { sources: names } }, { silent: true });
-      updateStatus();
+    const path = el.getAttribute?.('data-std-path');
+    if (!path) return;
+
+    const type = el.getAttribute('data-std-type') || 'string';
+    let value;
+    if (type === 'bool') value = typeof el.checked === 'boolean' ? el.checked : el.getAttribute('checked') !== null;
+    else if (type === 'number') {
+      const raw = typeof el.value === 'string' && el.value !== '' ? el.value : el.getAttribute('value');
+      value = Number(raw);
+      if (!Number.isFinite(value)) return; // 清空输入框时不要写坏设置
+    } else value = typeof el.value === 'string' ? el.value : el.getAttribute('value') ?? '';
+
+    app.updateSettings(setPath({}, path, value), { silent: true });
+
+    // 滑块旁边的数字实时更新
+    if ((el.getAttribute('type') || el.type) === 'range') {
+      const out = el.parentElement?.querySelector('.std-range-val');
+      if (out) out.textContent = String(value);
     }
+    // 需要整页重绘的控件（切换路线 / 开关联动）即时刷新
+    if (type === 'bool' || path === 'api.route') render();
+    else updateStatus();
+  }
+
+  /** 把世界书勾选写回设置（勾了任意一本 = 切到手动模式） */
+  function applyBookSelection() {
+    const names = [...panelEl.querySelectorAll('[data-std-book]')]
+      .filter((n) => (typeof n.checked === 'boolean' ? n.checked : n.getAttribute('checked') !== null))
+      .map((n) => n.getAttribute('data-std-book'))
+      .filter((n) => n !== null && n !== undefined);
+    app.updateSettings({ scan: { sources: names } }, { silent: true });
+    render();
   }
 
   function collectProfileEdits() {

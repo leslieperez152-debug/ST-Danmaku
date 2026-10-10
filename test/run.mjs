@@ -22,6 +22,8 @@ let failed = 0;
 const failures = [];
 
 function test(name, fn) {
+  // 每个用例开始前清掉假后端的排队响应，避免用例之间串数据
+  responseQueue.length = 0;
   try {
     const r = fn();
     if (r && typeof r.then === 'function') {
@@ -105,27 +107,73 @@ const fakeChat = [
 
 globalThis.document = doc;
 globalThis.localStorage = storage;
+/** 假酒馆的"当前连接"（测试里可改，用来验证来源跟随/体检） */
+const MOCK_CONNECTION = {
+  chat_completion_source: 'openai',
+  openai_model: 'gpt-4o-mini',
+  custom_url: '',
+  reverse_proxy: '',
+};
+
+/** 事件总线替身：记录下来，让测试能真的派发酒馆事件 */
+const mockEventSource = (() => {
+  const listeners = new Map();
+  return {
+    _listeners: listeners,
+    on(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    },
+    removeListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    emit(type, ...args) {
+      for (const fn of listeners.get(type) || []) fn(...args);
+    },
+  };
+})();
+
 globalThis.window = doc.defaultView;
+// 真实的 SillyTavern.getContext() 每次返回的是同一个稳定对象，
+// 所以这里的替身也必须稳定 —— 否则"换卡"这种靠改 ctx 状态的动作根本改不动。
+const mockContext = {
+  eventSource: mockEventSource,
+  eventTypes: {
+    CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
+    MESSAGE_RECEIVED: 'message_received',
+    CHAT_CHANGED: 'chat_id_changed',
+    CHARACTER_PAGE_LOADED: 'character_page_loaded',
+    CHARACTER_EDITED: 'character_edited',
+    CHARACTER_RENAMED: 'character_renamed',
+  },
+  chat: fakeChat,
+  chatMetadata: { file_name: 'test-chat' },
+  characters: [{ name: '测试卡', data: { extensions: { world: '' } } }],
+  characterId: 0,
+  worldInfoList: Object.keys(WORLDBOOKS),
+  extensionSettings: { world_info: { world_info: [] } },
+  chatCompletionSettings: MOCK_CONNECTION,
+  getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+  async loadWorldInfo(name) {
+    if (!(name in WORLDBOOKS)) throw new Error(`no such book: ${name}`);
+    return WORLDBOOKS[name];
+  },
+  setExtensionPrompt() {},
+};
+
 globalThis.SillyTavern = {
   getContext() {
-    return {
-      eventSource: { on() {}, removeListener() {}, emit() {} },
-      eventTypes: { CHARACTER_MESSAGE_RENDERED: 'character_message_rendered', MESSAGE_RECEIVED: 'message_received', CHAT_CHANGED: 'chat_id_changed' },
-      chat: fakeChat,
-      chatMetadata: { file_name: 'test-chat' },
-      characters: [{ name: '测试卡' }],
-      characterId: 0,
-      worldInfoList: Object.keys(WORLDBOOKS),
-      extensionSettings: { world_info: { world_info: [] } },
-      getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
-      async loadWorldInfo(name) {
-        if (!(name in WORLDBOOKS)) throw new Error(`no such book: ${name}`);
-        return WORLDBOOKS[name];
-      },
-      setExtensionPrompt() {},
-    };
+    return mockContext;
   },
 };
+
+/** 每次测试前把假连接复位，避免用例之间互相影响 */
+function resetMockConnection() {
+  MOCK_CONNECTION.chat_completion_source = 'openai';
+  MOCK_CONNECTION.openai_model = 'gpt-4o-mini';
+  MOCK_CONNECTION.custom_url = '';
+  MOCK_CONNECTION.reverse_proxy = '';
+}
 
 /** 假后端：按顺序吐预设回复 */
 let responseQueue = [];
@@ -151,6 +199,7 @@ const danmaku = await mod('danmaku.js');
 // main.js 要在渲染相关的用例之前就位（下面第 11 节起会用）
 const mainMod = await mod('main.js');
 const drawerMod = await mod('drawer.js');
+const panelMod = await mod('panel.js');
 
 /* ───────────── 1. 设置与持久化 ───────────── */
 
@@ -343,11 +392,25 @@ await test('直连路线没填地址时给的是可操作的提示', async () =>
   ok(/还没填 API 地址/.test(res.error), `提示不友好：${res.error}`);
 });
 
-await test('后端 4xx 时错误里带上状态码和原文', async () => {
+await test('后端报错会翻译成人话，而不是把英文原文甩给用户', async () => {
   queueResponse({ __http: 401, body: 'no api key' });
-  const res = await llm.chat({ api: { route: 'st', source: 'custom' }, system: 's', user: 'u', label: '测试' });
+  const res = await llm.chat({ api: { route: 'st', sourceMode: 'fixed', source: 'custom', reverseProxy: 'https://x' }, system: 's', user: 'u', label: '测试' });
   eq(res.ok, false);
-  ok(res.error.includes('401'), res.error);
+  ok(/API Key/.test(res.error), `应当提示 key 的问题：${res.error}`);
+  ok(!/no api key/.test(res.error), '不该把英文原文直接给用户');
+});
+
+await test('custom 端点没配地址时，给的是可照做的中文指引', async () => {
+  queueResponse({ choices: [{ message: { content: 'ok' } }] });
+  const res = await llm.chat({
+    api: { route: 'st', sourceMode: 'fixed', source: 'custom', reverseProxy: '' },
+    system: 's',
+    user: 'u',
+    label: '测试',
+  });
+  eq(res.ok, false, '配置不对时应当在本地就拦住，不发请求');
+  ok(/自动跟随酒馆当前连接/.test(res.error), res.error);
+  ok(!/Custom endpoint is missing/.test(res.error), '不该把后端英文报错透出去');
 });
 
 /* ───────────── 5. 世界书接入 ───────────── */
@@ -673,6 +736,36 @@ function useDoc(d) {
   globalThis.localStorage = d.defaultView.localStorage;
   return d;
 }
+
+/* ───── 换卡辅助 ─────
+   走产品代码里那条真实链路：ctx.eventTypes[name] → eventSource 上注册的监听器，
+   所以测的是"注册有没有生效"，而不只是"某个内部函数对不对"。 */
+
+function switchCard({ name, id, world }) {
+  const ctx = mockContext;
+  ctx.characters[id] = { name, data: { extensions: { world: world || '' } } };
+  ctx.characterId = id;
+}
+
+function emitTavernEvent(eventName, ...args) {
+  const type = mockContext.eventTypes[eventName];
+  if (!type) throw new Error(`未知事件名 ${eventName}`);
+  for (const fn of mockEventSource._listeners.get(type) || []) fn(...args);
+}
+
+/** 换一张卡，并派发酒馆的"卡片页加载完成"事件 */
+function changeCard(name, world, id = 5) {
+  switchCard({ name, id, world });
+  emitTavernEvent('CHARACTER_PAGE_LOADED');
+}
+
+/** 把当前卡复位回初始状态（用例之间隔离） */
+function resetCard() {
+  mockContext.characters = [{ name: '测试卡', data: { extensions: { world: '' } } }];
+  mockContext.characterId = 0;
+  mockContext.chatMetadata = { file_name: 'test-chat' };
+}
+
 function doc2create(d, tag) {
   return d.createElement(tag);
 }
@@ -967,6 +1060,61 @@ await test('悬浮层矩形换算成像素并被夹在视口内', () => {
 
 section('12. 正文隔离（弹幕不吃正文 token）');
 
+await test('默认自动跟随酒馆当前的连接（不会硬走 custom 撞报错）', async () => {
+  resetMockConnection();
+  MOCK_CONNECTION.chat_completion_source = 'deepseek';
+  MOCK_CONNECTION.openai_model = 'deepseek-chat';
+  queueResponse({ choices: [{ message: { content: 'ok' } }] });
+  const api = store.loadSettings(storage, {}).api;
+  eq(api.sourceMode, 'auto', '默认应当是自动跟随');
+  const res = await llm.chat({ api, system: 's', user: 'u', label: '测试' });
+  ok(res.ok, res.error);
+  eq(lastRequestBody.chat_completion_source, 'deepseek', '应当跟随酒馆当前连接');
+  eq(lastRequestBody.model, 'deepseek-chat', '模型也应当跟随');
+  resetMockConnection();
+});
+
+await test('酒馆里换了连接，弹幕也跟着换', async () => {
+  resetMockConnection();
+  const api = store.loadSettings(storage, {}).api;
+  MOCK_CONNECTION.chat_completion_source = 'openai';
+  MOCK_CONNECTION.openai_model = 'gpt-4o-mini';
+  queueResponse({ choices: [{ message: { content: 'ok' } }] });
+  await llm.chat({ api, system: 's', user: 'u', label: 't' });
+  eq(lastRequestBody.chat_completion_source, 'openai');
+
+  MOCK_CONNECTION.chat_completion_source = 'makersuite';
+  MOCK_CONNECTION.openai_model = 'gemini-2.0-flash';
+  queueResponse({ choices: [{ message: { content: 'ok' } }] });
+  await llm.chat({ api, system: 's', user: 'u', label: 't' });
+  eq(lastRequestBody.chat_completion_source, 'makersuite', '换连接后应当跟着换');
+  resetMockConnection();
+});
+
+await test('固定来源模式：忽略酒馆当前连接', async () => {
+  resetMockConnection();
+  MOCK_CONNECTION.chat_completion_source = 'openai';
+  queueResponse({ choices: [{ message: { content: 'ok' } }] });
+  const api = { ...store.loadSettings(storage, {}).api, sourceMode: 'fixed', source: 'deepseek' };
+  await llm.chat({ api, system: 's', user: 'u', label: 't' });
+  eq(lastRequestBody.chat_completion_source, 'deepseek', '固定模式应当用指定的来源');
+  resetMockConnection();
+});
+
+await test('custom 源会把酒馆里配的自定义地址传下去', async () => {
+  resetMockConnection();
+  MOCK_CONNECTION.chat_completion_source = 'custom';
+  MOCK_CONNECTION.custom_url = 'http://127.0.0.1:1234/v1';
+  MOCK_CONNECTION.openai_model = 'local-model';
+  queueResponse({ choices: [{ message: { content: 'ok' } }] });
+  const api = store.loadSettings(storage, {}).api;
+  const res = await llm.chat({ api, system: 's', user: 'u', label: 't' });
+  ok(res.ok, res.error);
+  eq(lastRequestBody.chat_completion_source, 'custom');
+  eq(lastRequestBody.custom_url, 'http://127.0.0.1:1234/v1', 'custom 源必须把地址带上，否则后端会报 Custom endpoint is missing');
+  resetMockConnection();
+});
+
 await test('弹幕请求体里只有我们自己的两条消息', async () => {
   queueResponse({ choices: [{ message: { content: '{"弹幕":[]}' } }] });
   await llm.chat({ api: { route: 'st', source: 'custom' }, system: '只有这些', user: '和这些', label: 't' });
@@ -1136,6 +1284,170 @@ await test('卸载设置栏后不会再响应事件', () => {
   const el = drawer.mount();
   drawer.unmount();
   eq(d.getElementById('std-drawer'), null, '卸载后 DOM 应当清掉');
+  app.destroy();
+});
+
+/* ───────────── 13c. 进卡自动跟随绑定世界书 ───────────── */
+
+section('13c. 进卡自动跟随该卡绑定的世界书');
+
+await test('换卡后，要读的世界书变成新卡绑定的那本', () => {
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  app.updateSettings({ scan: { sources: null } });
+  // 初始卡没绑世界书
+  eq(app.stats().worldbooksUsed.length, 0, '初始卡没绑书时不该读到东西');
+
+  changeCard('甲卡', '大书', 5);
+  const used = app.stats().worldbooksUsed;
+  eq(used.length, 1, `换卡后应当读到新卡绑定的书，实际 ${JSON.stringify(used)}`);
+  eq(used[0], '大书');
+  app.destroy();
+});
+
+await test('手动勾选不会带到下一张卡（默认跟随模式下自动切回）', () => {
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  eq(app.state.settings.scan.followCard, true, '默认应当开启跟随');
+
+  // 用户手动勾了两本
+  app.updateSettings({ scan: { sources: ['小书', '大书'] } });
+  eq(app.stats().worldbooksUsed.length, 2);
+
+  changeCard('乙卡', '小书', 6);
+  ok(app.state.settings.scan.sources === null, '换卡后应当退回自动跟随（清掉手动勾选）');
+  const used = app.stats().worldbooksUsed;
+  eq(used.length, 1, '应当只读新卡绑定的那本');
+  eq(used[0], '小书');
+  app.destroy();
+});
+
+await test('关掉跟随后，手动勾选会保留到别的卡上', () => {
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  app.updateSettings({ scan: { followCard: false, sources: ['大书'] } });
+
+  changeCard('丙卡', '小书', 7);
+  eq(app.state.settings.scan.sources.length, 1, '关掉跟随后手动勾选应保留');
+  eq(app.state.settings.scan.sources[0], '大书');
+  app.destroy();
+});
+
+await test('档案按「卡|聊天|世界书」缓存：换回扫过的卡能直接用', () => {
+  const s = makeMemoryStorage();
+  // 预置两份缓存，模拟两张卡以前都扫过
+  const keyA = store.profileKey('甲卡', 'test-chat', '大书');
+  const pA = store.emptyProfile();
+  pA.data = { ...pA.data, worldName: '大世界', channelName: '大世界的围观席' };
+  pA.generatedAt = Date.now();
+  store.putCachedProfile(s, keyA, pA);
+
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  changeCard('甲卡', '大书', 8);
+  ok(app.state.profile, '切到扫过的卡应当命中缓存，不用重扫');
+  eq(app.state.profile.data.worldName, '大世界');
+  app.destroy();
+});
+
+await test('换卡会清掉上一张卡的观众名册（不串味）', async () => {
+  resetMockConnection();
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  app.updateSettings({ seedDemo: true });
+
+  // 伪造一份属于"测试卡"的名册
+  app.state.runtime.viewers = [{ 昵称: '上张卡的观众', 类型: '路人', 立场: '', 口癖: '', 出现次数: 3 }];
+  app.state.runtime.viewersCardName = '测试卡';
+  app.persistRuntime();
+  eq(app.stats().viewers.length, 1);
+
+  changeCard('丁卡', '小书', 9);
+  eq(app.stats().viewers.length, 0, '换卡后名册必须作废，否则弹幕里会冒出上一张卡的人');
+  app.destroy();
+});
+
+await test('同一张卡重复触发事件不会误清设置', () => {
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  app.updateSettings({ scan: { followCard: true, sources: ['大书'] } });
+  // 同一张卡（签名不变）再发一次卡片页加载
+  emitTavernEvent('CHARACTER_PAGE_LOADED');
+  eq(app.state.settings.scan.sources.length, 1, '卡没变就不该清掉手动勾选');
+  app.destroy();
+});
+
+/** 打开面板并切到「世界书」页（像真实浏览器那样，从页签按钮上派发 click） */
+function openWorldTab(app, panel) {
+  panel.toggle(true);
+  const tab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'world');
+  ok(tab, '应当有「世界书」页签');
+  // 关键：必须派发在按钮本身（事件会向上冒泡到面板），
+  // 而不是派发在面板上再塞一个 target —— 后者在真实 DOM 里根本不会触发按钮的祖先监听器
+  tab.dispatch('click', { target: tab });
+  return panel;
+}
+
+await test('手动勾选世界书能写回设置（点击路径）', () => {
+  const { d, app } = makeDrawerEnv();
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  openWorldTab(app, panel);
+
+  const boxes = panel.el.querySelectorAll('[data-std-book]');
+  ok(boxes.length >= 3, `世界书页应当列出所有可用的书，实际 ${boxes.length}`);
+
+  // 勾上"小书"
+  const target = boxes.find((b) => b.getAttribute('data-std-book') === '小书');
+  ok(target, '应当能找到"小书"这个勾选框');
+  target.checked = true;
+  // 真实浏览器里点复选框会派发 change（这里同时覆盖 click 兜底路径）
+  panel.el.dispatch('change', { target });
+  eq(
+    app.state.settings.scan.sources.includes('小书'),
+    true,
+    `勾选后应当写回设置，实际 ${JSON.stringify(app.state.settings.scan.sources)}`,
+  );
+
+  // 再点一下取消
+  openWorldTab(app, panel);
+  const target2 = panel.el.querySelectorAll('[data-std-book]').find((b) => b.getAttribute('data-std-book') === '小书');
+  target2.checked = false;
+  panel.el.dispatch('change', { target: target2 });
+  eq(app.state.settings.scan.sources.includes('小书'), false, '取消勾选也应当生效');
+  app.destroy();
+});
+
+await test('换卡后世界书页会显示新卡绑定的书', () => {
+  const { d, app } = makeDrawerEnv();
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  changeCard('戊卡', '大书', 11);
+  openWorldTab(app, panel);
+  const html = panel.el.querySelector('.std-body').innerHTML;
+  ok(/自动跟随当前卡绑定的世界书/.test(html), `应当显示跟随模式：${html.slice(0, 200)}`);
+  ok(html.includes('戊卡'), '应当显示当前卡名');
+  ok(html.includes('大书'), '应当列出会读的世界书');
+  app.destroy();
+});
+
+await test('设置栏挂上之后，世界书勾选依然只由面板负责，不会互相打架', () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  ok(el, '设置栏应当挂上');
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  openWorldTab(app, panel);
+  const box = panel.el.querySelectorAll('[data-std-book]').find((b) => b.getAttribute('data-std-book') === '大书');
+  box.checked = true;
+  panel.el.dispatch('change', { target: box });
+  eq(app.state.settings.scan.sources.includes('大书'), true);
   app.destroy();
 });
 

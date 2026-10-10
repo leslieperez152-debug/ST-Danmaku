@@ -105,6 +105,18 @@ export function getCardName() {
   return String(ch.name || '').trim();
 }
 
+/** 当前角色卡 id（换卡检测用）。拿不到时返回空串。 */
+export function getCurrentCharacterId() {
+  const ctx = getCtx();
+  try {
+    if (!ctx) return '';
+    const id = ctx.characterId ?? ctx.this_chid;
+    return id === undefined || id === null ? '' : String(id);
+  } catch {
+    return '';
+  }
+}
+
 /** 当前聊天文件名，用作档案缓存的键之一 */
 export function getChatId() {
   const ctx = getCtx();

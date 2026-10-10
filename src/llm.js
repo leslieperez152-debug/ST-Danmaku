@@ -185,11 +185,20 @@ async function fetchWithTimeout(url, init, timeoutMs) {
 
 /* ───────────── 请求体构造 ───────────── */
 
-function resolveStTarget(api) {
+/** 确定这次请求要用的酒馆后端参数 */
+export function resolveStTarget(api) {
   const preset = String(api.proxyPreset || '').trim();
   const current = getCurrentConnection();
+  const explicit = String(api.source || '').trim();
+
+  // 默认"自动"：跟随酒馆当前连接。这样用户已经在酒馆里配好的 key 能直接用，
+  // 不会出现"自定义端点没配置"这种因为插件默认值选错而撞上的报错。
+  const auto = api.sourceMode !== 'fixed';
+  let source = auto ? String(current?.source || '').trim() || explicit || 'openai' : explicit || 'openai';
+
   const out = {
-    chat_completion_source: String(api.source || 'custom'),
+    chat_completion_source: source,
+    custom_url: '',
     reverse_proxy: '',
     proxy_password: '',
     model: String(api.model || '').trim(),
@@ -197,17 +206,42 @@ function resolveStTarget(api) {
   };
 
   if (preset) {
-    // 代理预设：把名字带上，后端自己解析（SillyTavern 的 reverse_proxy 支持预设名）
+    // 代理预设：名字交给后端自己解析
     out.reverse_proxy = preset;
     out.presetHint = preset;
     return out;
   }
   if (api.reverseProxy) out.reverse_proxy = String(api.reverseProxy);
-  if (!out.model && current?.model && current.source === out.chat_completion_source) {
-    // 跟随酒馆当前连接：只覆盖用哪个模型，其余照旧
-    out.model = current.model;
+
+  // custom 源的地址必须显式传下去（后端从 body.custom_url 取），否则会报
+  // "Custom endpoint is missing. Please configure custom_url."
+  if (source === 'custom') {
+    out.custom_url = String(current?.customUrl || api.reverseProxy || '').trim();
   }
+  if (!out.model && current?.model) out.model = String(current.model);
+
   return out;
+}
+
+/** 请求前的基本体检：有问题就在这一侧说人话，不去猜后端英文报错 */
+export function preflight(api) {
+  if (api?.route === 'direct') {
+    const d = api.direct || {};
+    if (!String(d.baseUrl || '').trim()) return { ok: false, error: '直连路线还没填 API 地址（面板 → 连接）' };
+    if (!String(d.model || api.model || '').trim()) return { ok: false, error: '直连路线还没填模型名（面板 → 连接）' };
+    return { ok: true };
+  }
+  const target = resolveStTarget(api || {});
+  if (target.chat_completion_source === 'custom' && !target.custom_url) {
+    return {
+      ok: false,
+      error:
+        '当前用的是「自定义 OpenAI 兼容端点（custom）」，但酒馆里没配这个地址。两个办法：' +
+        '① 把「AI 来源」改成「自动跟随酒馆当前连接」（推荐，直接复用你已配好的连接）；' +
+        '② 或在酒馆的「聊天补全」设置里填好自定义端点地址。',
+    };
+  }
+  return { ok: true };
 }
 
 /** 走酒馆后端的完整请求体 */
@@ -223,6 +257,7 @@ export function buildStRequestBody(api, messages, { jsonSchema } = {}) {
     // 关掉酒馆的各种"后处理"，我们要的是原样收发
     custom_prompt_post_processing: '',
   };
+  if (target.custom_url) body.custom_url = target.custom_url;
   if (target.reverse_proxy) body.reverse_proxy = target.reverse_proxy;
   if (target.proxy_password) body.proxy_password = target.proxy_password;
   if (jsonSchema) body.json_schema = jsonSchema;
@@ -250,6 +285,10 @@ export async function chat(req) {
   const route = api?.route === 'direct' ? 'direct' : 'st';
   const timeoutMs = Number(api?.timeoutMs) || 120000;
 
+  // 先体检：配置不对就在这一侧给出人话，不去猜后端的英文报错
+  const pre = preflight(api);
+  if (!pre.ok) return { ok: false, text: '', error: `${label}失败：${pre.error}`, route };
+
   if (route === 'direct') {
     return chatDirect({ system, user, api, jsonSchema, label, timeoutMs });
   }
@@ -258,7 +297,7 @@ export async function chat(req) {
 
 async function chatViaSt({ system, user, api, jsonSchema, label, timeoutMs }) {
   const target = resolveStTarget(api);
-  // Gemini / Claude 之流对 system role 的处理不一致，先按标准发，失败再合并
+  // Gemini 对 system role 的处理不一致，先按合并模式发，失败再换成标准 system 消息
   const modes = target.chat_completion_source === 'makersuite' ? ['merge', 'system'] : ['system', 'merge'];
   let lastError = '';
 
@@ -282,7 +321,7 @@ async function chatViaSt({ system, user, api, jsonSchema, label, timeoutMs }) {
     }
 
     if (!res.ok) {
-      lastError = `酒馆后端返回 ${res.status}：${truncate(res.text, 300)}`;
+      lastError = humanizeBackendError(res.status, res.text);
       // 4xx 且提到 system，才值得换 mode 重试
       if (res.status >= 400 && res.status < 500 && /system|role|content/i.test(res.text) && mode === modes[0]) {
         continue;
@@ -431,6 +470,35 @@ export async function fetchModelList(api) {
 }
 
 /* ───────────── 小工具 ───────────── */
+
+/**
+ * 把酒馆后端返回的英文报错翻译成能直接照做的提示。
+ * 后端有些报错是"配置没填对"，原文对用户几乎没有可操作性。
+ */
+export function humanizeBackendError(status, text) {
+  const raw = String(text || '');
+  const low = raw.toLowerCase();
+
+  if (low.includes('custom endpoint is missing') || low.includes('configure custom_url')) {
+    return '当前用的是「自定义端点（custom）」但酒馆里没配这个地址 —— 把「AI 来源」改成「自动跟随酒馆当前连接」，或到酒馆的聊天补全设置里填好自定义端点。';
+  }
+  if (low.includes('no api key') || low.includes('api key is required') || low.includes('missing api key')) {
+    return '这个来源没有可用的 API Key —— 到酒馆的「聊天补全」里配好，或把「AI 来源」换成已经配好的那个。';
+  }
+  if (status === 401 || status === 403) {
+    return `认证失败（${status}）—— 检查酒馆里这个来源的 API Key 是否有效。`;
+  }
+  if (status === 404) {
+    return `接口不存在（404）—— 多半是模型名或地址填错了。`;
+  }
+  if (status === 429) {
+    return '被限流了（429）—— 等一会儿再试，或换个来源/模型。';
+  }
+  if (status >= 500) {
+    return `服务端错误（${status}）—— 通常是上游服务的问题，稍后重试。`;
+  }
+  return `酒馆后端返回 ${status}：${truncate(raw, 160)}`;
+}
 
 export function truncate(s, n) {
   const str = String(s ?? '');

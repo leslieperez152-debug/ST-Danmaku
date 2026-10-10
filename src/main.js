@@ -29,10 +29,12 @@ import {
 import {
   getCtx,
   getCardName,
+  getCurrentCharacterId,
   getChatId,
   getRecentStory,
   resolveWorldbookNames,
   listWorldbookNames,
+  getCurrentConnection,
   setLiveInjection,
   clearLiveInjection,
   onEvents,
@@ -40,7 +42,7 @@ import {
 } from './st.js';
 import { scanWorldbooks, estimateScanCost } from './scan.js';
 import { generateBatch, buildViewerPool, buildStoryContext, pickGags } from './danmaku.js';
-import { chat, chatJson, fetchModelList } from './llm.js';
+import { chat, chatJson, fetchModelList, resolveStTarget } from './llm.js';
 import { buildPalette, sampleBackgroundLuminance } from './color.js';
 import {
   createFrame,
@@ -84,6 +86,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     offEvents: [],
     offOverlay: null,
     frames: new Map(), // messageId -> frame 对象
+    cardSig: '', // 当前卡+聊天签名（换卡检测用）
     initialized: false,
   };
 
@@ -100,6 +103,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     }
 
     state.profile = loadCurrentProfile();
+    state.cardSig = cardSignature();
 
     ensureOverlay(doc);
     applyOverlayStyle(doc, state.settings.appearance);
@@ -146,7 +150,9 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         onAssistantMessage(Number.isFinite(Number(id)) ? Number(id) : undefined);
       }),
     );
+    // 进卡 / 换卡：这两类事件都会到，靠卡签名去重
     state.offEvents.push(onEvents(['CHAT_CHANGED'], () => onChatChanged()));
+    state.offEvents.push(onEvents(['CHARACTER_PAGE_LOADED', 'CHARACTER_EDITED', 'CHARACTER_RENAMED'], () => onCardMaybeChanged()));
     state.offEvents.push(
       onEvents(['MESSAGE_EDITED', 'MESSAGE_UPDATED', 'MESSAGE_SWIPED'], (payload) => {
         const id = Array.isArray(payload) ? payload[0] : payload;
@@ -160,14 +166,77 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     );
   }
 
-  function onChatChanged() {
+  /** 当前卡 + 聊天的签名，用来判断"是不是真的换了一张卡" */
+  function cardSignature() {
+    const ch = getCurrentCharacterId();
+    return `${ch}::${getCardName()}::${getChatId()}`;
+  }
+
+  function purgeVisuals() {
     clearAllFrames(doc);
     state.frames.forEach((f) => stopFrame(f));
     state.frames.clear();
+    stopOverlay(doc);
+    clearLiveInjection();
+  }
+
+  function onChatChanged() {
+    purgeVisuals();
     state.runtime = loadRuntime(storage);
     state.profile = loadCurrentProfile();
-    clearLiveInjection();
+    state.cardSig = cardSignature();
+    // 换聊天时，名册属于上一张卡就作废
+    if (state.runtime.viewersCardName && state.runtime.viewersCardName !== getCardName()) {
+      state.runtime.viewers = [];
+      state.runtime.viewersProfileKey = '';
+      state.runtime.viewersCardName = '';
+      persistRuntime();
+    }
     api.emit('chat');
+  }
+
+  /**
+   * 进卡 / 换卡的处理。
+   *
+   * 这是"进一张卡就自动抓那张卡绑定的世界书"的落点：
+   *   · 自动模式下世界书本来就是按当前卡绑定的现算的，所以换卡即换书；
+   *   · 但用户手动勾过世界书时，勾选会被记住 —— 那套书是上一张卡的，
+   *     带到新卡上就是串味。所以换卡时把手动勾选清掉、退回自动跟随。
+   *   · 档案按「卡|聊天|世界书」缓存，换回以前扫过的卡会直接命中缓存，不用重扫。
+   */
+  function onCardMaybeChanged() {
+    const sig = cardSignature();
+    if (sig === state.cardSig) return;
+    const prevCard = state.cardSig ? state.cardSig.split('::')[1] : '';
+    const nextCard = getCardName();
+
+    purgeVisuals();
+    state.cardSig = sig;
+
+    if (state.settings.scan.followCard && state.settings.scan.sources !== null) {
+      state.settings.scan.sources = null;
+      persistSettings();
+    }
+
+    state.profile = loadCurrentProfile();
+    state.runtime = loadRuntime(storage);
+
+    // 观众名册是按上一张卡的世界观起的，换卡必须重做
+    if (state.runtime.viewersCardName && state.runtime.viewersCardName !== nextCard) {
+      state.runtime.viewers = [];
+      state.runtime.viewersProfileKey = '';
+      state.runtime.viewersCardName = '';
+      persistRuntime();
+    }
+
+    const books = resolveWorldbookNames(state.settings.scan.sources);
+    api.emit('card', { prevCard, nextCard, books, profile: state.profile });
+    logLine(
+      state.profile
+        ? `已切到《${nextCard || '无卡'}》：用回已缓存的观众档案（世界书 ${books.length} 本）`
+        : `已切到《${nextCard || '无卡'}》：世界书 ${books.length} 本，还没扫描过这张卡的档案`,
+      'info',
+    );
   }
 
   /* ───────────── 档案 ───────────── */
@@ -512,6 +581,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       }
       state.runtime.viewers = res.viewers;
       state.runtime.viewersProfileKey = currentProfileKey();
+      state.runtime.viewersCardName = getCardName();
       persistRuntime();
       api.emit('viewers', res.viewers);
       return { ok: true, viewers: res.viewers };
@@ -624,6 +694,37 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     /** 面板用：所有可用世界书名 */
     listAllWorldbooks() {
       return listWorldbookNames();
+    },
+    /** 面板用：说清当前到底会读哪些世界书、是不是在跟随当前卡 */
+    describeWorldbookSource() {
+      const s = state.settings.scan;
+      const names = resolveWorldbookNames(s.sources);
+      const manual = Array.isArray(s.sources) && s.sources.length > 0;
+      const none = Array.isArray(s.sources) && s.sources.length === 0;
+      const mode = manual
+        ? s.followCard
+          ? '手动指定（换卡自动切回跟随该卡）'
+          : '手动指定（换卡也保留）'
+        : none
+          ? '手动指定：一本都不读'
+          : '自动跟随当前卡绑定的世界书';
+      return { mode, names, card: getCardName() };
+    },
+    /** 面板用：说清弹幕现在到底会用哪个 AI 来源 */
+    describeAiSource() {
+      const api = state.settings.api;
+      if (api.route === 'direct') {
+        return api.direct?.baseUrl ? `直连：${api.direct.baseUrl}` : '直连：还没填地址';
+      }
+      if (String(api.proxyPreset || '').trim()) return `走代理预设：${api.proxyPreset}`;
+      const cur = getCurrentConnection();
+      const target = resolveStTarget(api);
+      const parts = [`来源 ${target.chat_completion_source || '未知'}`];
+      if (target.model) parts.push(`模型 ${target.model}`);
+      else parts.push('模型：跟随酒馆当前模型');
+      if (api.sourceMode === 'auto' && !cur?.source) parts.push('（未能读到酒馆当前连接，请检查是否已选好聊天补全）');
+      if (target.chat_completion_source === 'custom' && !target.custom_url) parts.push('⚠ 自定义端点没配地址');
+      return parts.join('　|　');
     },
     /** 面板用：本次扫描大约要读多少字（让用户心里有数） */
     estimateScan() {
