@@ -258,8 +258,7 @@ function pages(app) {
         return [
           '<div class="std-sec">楼层弹幕框</div>',
           row2('启用', toggle('appearance.frameEnabled', a.frameEnabled, '挂在每轮正文下面的一块幕布')),
-          row2('背景', colorPicker(a.frameBackground), '点色块挑预设，或直接改下面的文本框（支持颜色和渐变）'),
-          row2('背景（自由填写）', text('appearance.frameBackground', a.frameBackground, 'CSS 颜色或渐变')),
+          row2('背景', colorPicker(a.frameBackground), '点色块挑预设，或直接改下面的文本框（支持颜色和渐变）'),          row2('背景（自由填写）', text('appearance.frameBackground', a.frameBackground, 'CSS 颜色或渐变')),
           row2('高度（px）', number('appearance.frameHeight', a.frameHeight, 48, 600, 4)),
           row2('字号（px）', number('appearance.fontSize', a.fontSize, 8, 48, 1)),
           row2('速度（px/秒）', number('appearance.speed', a.speed, 20, 900, 5), '越大飞得越快'),
@@ -275,6 +274,12 @@ function pages(app) {
             range('appearance.overlayOpacity', a.overlayOpacity, 0.02, 1, 0.02),
             '这一项改的是整个悬浮层（标题栏 + 弹幕）的透明度；拖动和悬停都不会覆盖它',
           ),
+          row2(
+            '背景色',
+            colorPicker(a.overlayBg, OVERLAY_BG_PRESETS, '预览：悬浮层背景', 'overlay'),
+            '悬浮层是盖在正文上的，所以这些预设都带透明度；它会和上面的"整层不透明度"叠乘',
+          ),
+          row2('背景（自由填写）', text('appearance.overlayBg', a.overlayBg, 'CSS 颜色或渐变，如 rgba(0,0,0,.4)')),
           row2('播完自动淡出', toggle('appearance.overlayFade', a.overlayFade, '每批播完后整层淡下去，不挡着看正文')),
           btnRow([
             { label: '按当前主题取个色', act: 'sample-frame-bg' },
@@ -422,15 +427,29 @@ const FRAME_BG_PRESETS = [
   ['酒红', '#4a1f27'],
 ];
 
-function colorPicker(current) {
-  const swatches = FRAME_BG_PRESETS.map(
-    ([name, css]) =>
-      `<button type="button" class="std-swatch${css === current ? ' sel' : ''}" data-std-swatch="${esc(css)}" title="${esc(
-        name,
-      )}" style="background:${esc(css)}"></button>`,
-  ).join('');
-  return `<div class="std-swatches">${swatches}</div>
-    <div class="std-preview" style="background:${esc(current)}">预览：弹幕框背景</div>`;
+/* 悬浮层背景预设：都带透明度，因为它是盖在正文上面的 */
+const OVERLAY_BG_PRESETS = [
+  ['极淡', 'linear-gradient(180deg, rgba(0, 0, 0, 0.10) 0%, rgba(0, 0, 0, 0.02) 100%)'],
+  ['默认', 'linear-gradient(180deg, rgba(0, 0, 0, 0.30) 0%, rgba(0, 0, 0, 0.06) 100%)'],
+  ['较深', 'linear-gradient(180deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.20) 100%)'],
+  ['纯黑', 'rgba(0, 0, 0, 0.45)'],
+  ['冷蓝', 'linear-gradient(180deg, rgba(20, 40, 90, 0.42) 0%, rgba(10, 20, 50, 0.10) 100%)'],
+  ['暖褐', 'linear-gradient(180deg, rgba(70, 40, 20, 0.40) 0%, rgba(40, 20, 10, 0.10) 100%)'],
+  ['无背景', 'transparent'],
+];
+
+function colorPicker(current, presets = FRAME_BG_PRESETS, previewText = '预览：弹幕框背景', target = 'frame') {
+  const swatches = presets
+    .map(
+      ([name, css]) =>
+        `<button type="button" class="std-swatch${css === current ? ' sel' : ''}" data-std-swatch="${esc(css)}" title="${esc(
+          name,
+        )}" style="background:${esc(css)}"></button>`,
+    )
+    .join('');
+  // 预览放在有格纹的底上，才看得出透明度
+  return `<div class="std-swatches" data-std-bgtarget="${esc(target)}">${swatches}</div>
+    <div class="std-preview-wrap"><div class="std-preview" style="background:${esc(current)}">${esc(previewText)}</div></div>`;
 }
 
 function profileEditor(prof) {
@@ -590,7 +609,7 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
   }
 
   /* 事件订阅：任何状态变化都尽量反映到面板 */
-  ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'cleared', 'scan'].forEach((evt) =>
+  ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'books', 'cleared', 'scan'].forEach((evt) =>
     app.on(evt, (payload) => {
       if (evt === 'scan') scanPhase = payload && payload.phase && payload.phase !== 'end' ? payload : null;
       scheduleRefresh();
@@ -600,10 +619,16 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
   /* ───────────── 交互 ───────────── */
 
   async function onPanelClick(ev) {
-    // 色块：点一下就换弹幕框背景
+    // 色块：点一下就换对应的背景（弹幕框 或 悬浮层）
     const swatch = ev.target?.closest?.('[data-std-swatch]');
     if (swatch) {
-      app.updateSettings({ appearance: { frameBackground: swatch.getAttribute('data-std-swatch'), frameBgTouched: true } }, { silent: true });
+      const css = swatch.getAttribute('data-std-swatch');
+      const target = swatch.closest('[data-std-bgtarget]')?.getAttribute('data-std-bgtarget') || 'frame';
+      const patch =
+        target === 'overlay'
+          ? { appearance: { overlayBg: css, overlayBgTouched: true } }
+          : { appearance: { frameBackground: css, frameBgTouched: true } };
+      app.updateSettings(patch, { silent: true });
       render();
       return;
     }

@@ -99,6 +99,7 @@ const WORLDBOOKS = {
 };
 
 let lastRequestBody = null;
+let lastFetchUrl = '';
 
 const fakeChat = [
   { name: 'User', is_user: true, mes: '我们往山里走。' },
@@ -192,12 +193,22 @@ function queueResponse(obj) {
 }
 globalThis.fetch = async (url, init) => {
   lastRequestBody = init?.body ? JSON.parse(init.body) : null;
+  lastFetchUrl = String(url);
+  // 酒馆的世界书列表接口：返回 [{file_id, name}]
+  if (String(url).includes('/api/worldinfo/list')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => Object.keys(WORLDBOOKS).map((n) => ({ file_id: n, name: n })),
+      text: async () => JSON.stringify(Object.keys(WORLDBOOKS).map((n) => ({ file_id: n, name: n }))),
+    };
+  }
   const next = responseQueue.shift() ?? { choices: [{ message: { content: '{"弹幕":[]}' } }] };
   if (next.__http && next.__http !== 200) {
     return { ok: false, status: next.__http, text: async () => next.body || '' };
   }
   const body = typeof next === 'string' ? next : JSON.stringify(next);
-  return { ok: true, status: 200, text: async () => body };
+  return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
 };
 
 const store = await mod('store.js');
@@ -1626,6 +1637,130 @@ await test('弹幕框会把背景色写进 DOM', () => {
     items: [{ 昵称: '甲', 内容: 'x' }],
   });
   eq(frame.el.style.getPropertyValue('--std-bg'), bg, '背景应当作为 CSS 变量传下去');
+});
+
+/* ───────────── 13d. 世界书清单的获取（getContext 并不暴露这个数组） ───────────── */
+
+section('13d. 世界书清单获取（多层兜底）');
+
+await test('【真实场景】ctx 里没有任何世界书数组时，能拿到清单', async () => {
+  // 这正是 TauriTavern 的实际情况：getContext() 只给了 updateWorldInfoList / loadWorldInfo，
+  // 世界书名数组根本没有对外暴露。所以这里把 ctx 上的候选字段全部清空。
+  const saved = {
+    worldInfoList: mockContext.worldInfoList,
+    getWorldInfoNames: mockContext.getWorldInfoNames,
+  };
+  delete mockContext.worldInfoList;
+  delete mockContext.getWorldInfoNames;
+
+  lastFetchUrl = '';
+  const books = await st.refreshWorldbookNames(true);
+  ok(books.length === 3, `应当拿到 3 本，实际 ${books.length}`);
+  eq(books.map((b) => b.name).sort().join(','), '大书,小书,空书'.split(',').sort().join(','));
+  ok(lastFetchUrl.includes('/api/worldinfo/list'), `应当走了服务端列表接口，实际 ${lastFetchUrl}`);
+
+  // 名字要能当文件名用
+  eq(st.resolveWorldbookFileId('大书'), '大书');
+
+  mockContext.worldInfoList = saved.worldInfoList;
+  if (saved.getWorldInfoNames) mockContext.getWorldInfoNames = saved.getWorldInfoNames;
+});
+
+await test('如果客户端暴露了 getWorldInfoNames()，优先用它（不发多余请求）', async () => {
+  mockContext.getWorldInfoNames = () => ['甲书', '乙书'];
+  lastFetchUrl = '';
+  const books = await st.refreshWorldbookNames(true);
+  eq(books.length, 2);
+  eq(books[0].name, '甲书');
+  eq(lastFetchUrl, '', '有官方函数时不该再去打接口');
+  delete mockContext.getWorldInfoNames;
+  await st.refreshWorldbookNames(true); // 复位缓存
+});
+
+await test('清单拿不到时保留旧缓存，不会把列表清空', async () => {
+  await st.refreshWorldbookNames(true);
+  const before = st.listWorldbookEntries();
+  ok(before.length > 0);
+  // 模拟接口挂掉 + ctx 也没有数组
+  const savedFetch = globalThis.fetch;
+  const savedList = mockContext.worldInfoList;
+  delete mockContext.worldInfoList;
+  globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => null, text: async () => '' });
+  await st.refreshWorldbookNames(true);
+  eq(st.listWorldbookEntries().length, before.length, '一次失败不该把已有清单清空');
+  globalThis.fetch = savedFetch;
+  mockContext.worldInfoList = savedList;
+  await st.refreshWorldbookNames(true);
+});
+
+await test('显示名与文件名不一致时，读取会两个都试', async () => {
+  const tried = [];
+  const savedLoad = mockContext.loadWorldInfo;
+  mockContext.loadWorldInfo = async (key) => {
+    tried.push(key);
+    if (key === '大书文件') return WORLDBOOKS['大书'];
+    throw new Error('not found');
+  };
+  // 伪造一份"显示名 ≠ 文件名"的清单
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/api/worldinfo/list')) {
+      return { ok: true, status: 200, json: async () => [{ file_id: '大书文件', name: '大书显示名' }], text: async () => '' };
+    }
+    return { ok: true, status: 200, text: async () => '{}' };
+  };
+  delete mockContext.worldInfoList;
+  await st.refreshWorldbookNames(true);
+  eq(st.resolveWorldbookFileId('大书显示名'), '大书文件', '应当能由显示名找到文件名');
+
+  const res = await st.readWorldbook('大书显示名');
+  ok(res.ok, res.error);
+  eq(res.entries.length, 600);
+  ok(tried.includes('大书文件'), `应当试过文件名，实际试了 ${JSON.stringify(tried)}`);
+
+  globalThis.fetch = savedFetch;
+  mockContext.loadWorldInfo = savedLoad;
+  mockContext.worldInfoList = Object.keys(WORLDBOOKS);
+  await st.refreshWorldbookNames(true);
+});
+
+/* ───────────── 13e. 悬浮层背景色 ───────────── */
+
+section('13e. 悬浮弹幕层的背景色');
+
+await test('悬浮层背景由设置决定并写进 CSS 变量', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+  const bg = 'linear-gradient(180deg, rgba(20, 40, 90, 0.42) 0%, rgba(10, 20, 50, 0.1) 100%)';
+  ov.applyOverlayStyle(d2, { overlayBg: bg, overlayOpacity: 0.5, fontSize: 15, speed: 110 });
+  eq(root.style.getPropertyValue('--std-ov-bg'), bg, '背景应当写进 --std-ov-bg');
+  eq(root.style.getPropertyValue('--std-ov-opacity'), '0.5', '不透明度也应当写进去');
+});
+
+await test('悬浮层背景色块能改设置，且不会误改弹幕框背景', () => {
+  const { d, app } = makeDrawerEnv();
+  const panel = panelMod.createPanel(app);
+  panel.build();
+  panel.toggle(true);
+  const lookTab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'look');
+  lookTab.dispatch('click', { target: lookTab });
+
+  const overlayPicker = panel.el.querySelector('[data-std-bgtarget="overlay"]');
+  ok(overlayPicker, '应当有悬浮层背景的色块组');
+  const framePicker = panel.el.querySelector('[data-std-bgtarget="frame"]');
+  ok(framePicker, '应当有弹幕框背景的色块组');
+
+  const frameBgBefore = app.state.settings.appearance.frameBackground;
+  const btn = overlayPicker.querySelectorAll('[data-std-swatch]')[3];
+  const css = btn.getAttribute('data-std-swatch');
+  btn.dispatch('click', { target: btn });
+
+  eq(app.state.settings.appearance.overlayBg, css, '悬浮层背景应当被改掉');
+  eq(app.state.settings.appearance.overlayBgTouched, true);
+  eq(app.state.settings.appearance.frameBackground, frameBgBefore, '不该动到弹幕框背景');
+  app.destroy();
 });
 
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');

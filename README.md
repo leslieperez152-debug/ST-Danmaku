@@ -190,7 +190,7 @@ powershell -ExecutionPolicy Bypass -File .\安装.ps1
 
 ```bash
 npm run check   # 语法检查（每个文件都过一遍 node --check）
-npm test        # 108 项自检：设置持久化 / 配色对比度 / 各家响应解析 / 脏输出兜底 /
+npm test        # 114 项自检：设置持久化 / 配色对比度 / 各家响应解析 / 脏输出兜底 /
                 # 世界书预算制扫描 / 体裁自检 / 剧情关联 / 渲染结构 / 正文隔离 / 注入长度 / 事件调度
 npm run verify  # 上面两个一起跑
 ```
@@ -234,7 +234,7 @@ ST-Danmaku/
 │   └── main.js           总装：取数 → 生成 → 渲染 → 注入 → 事件调度
 └── test/
     ├── mini-dom.js       极简 DOM 替身（含 innerHTML 解析与事件冒泡）
-    └── run.mjs           108 项自检
+    └── run.mjs           114 项自检
 ```
 
 ---

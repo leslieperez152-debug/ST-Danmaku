@@ -34,6 +34,7 @@ import {
   getRecentStory,
   resolveWorldbookNames,
   listWorldbookNames,
+  refreshWorldbookNames,
   getBoundWorldbooks,
   getCurrentConnection,
   setLiveInjection,
@@ -232,6 +233,12 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
     const books = resolveWorldbookNames(state.settings.scan.sources);
     api.emit('card', { prevCard, nextCard, books, profile: state.profile });
+    // 换卡后清单可能也变了（不同卡导入过不同世界书），刷新一次
+    refreshWorldbookNames(true)
+      .then((list) => {
+        if (list.length) api.emit('books', list);
+      })
+      .catch(() => {});
     logLine(
       state.profile
         ? `已切到《${nextCard || '无卡'}》：用回已缓存的观众档案（世界书 ${books.length} 本）`

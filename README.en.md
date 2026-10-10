@@ -176,7 +176,7 @@ Zero dependencies, zero build step. Edit and refresh. Self-checks need Node ≥ 
 
 ```bash
 npm run check   # syntax check every file
-npm test        # 108 self-checks
+npm test        # 114 self-checks
 npm run verify  # both
 ```
 

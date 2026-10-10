@@ -186,7 +186,8 @@
      导致"调透明度没反应"）。 */
   opacity: var(--std-ov-opacity, 0.35);
   transition: box-shadow 0.25s ease, outline-color 0.25s ease;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.03));
+  /* 背景色由用户在面板里选（--std-ov-bg），默认一层很淡的暗色 */
+  background: var(--std-ov-bg, linear-gradient(180deg, rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0.06)));
   outline: 1px dashed rgba(255, 255, 255, 0);
 }
 
@@ -1137,9 +1138,21 @@ textarea.std-input {
   box-shadow: 0 0 0 2px rgba(140, 180, 255, 0.35), inset 0 1px 2px rgba(255, 255, 255, 0.25);
 }
 
+.std-preview-wrap {
+  /* 格纹底：这样带透明度的背景也能看出效果 */
+  padding: 3px;
+  border-radius: 8px;
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%);
+  background-size: 10px 10px;
+  background-position: 0 0, 0 5px, 5px -5px, -5px 0;
+}
+
 .std-preview {
   height: 34px;
-  border-radius: 7px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;

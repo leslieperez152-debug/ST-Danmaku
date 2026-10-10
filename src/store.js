@@ -100,6 +100,8 @@ export function defaultSettings() {
       showMeta: true, // 显示轨道序号（楼层号）
       keepStatic: true, // 播完后留下一份静态列表，方便回看
       overlayEnabled: true, // 悬浮层默认开：它浮在上面，不占正文版面
+      overlayBg: 'linear-gradient(180deg, rgba(0, 0, 0, 0.30) 0%, rgba(0, 0, 0, 0.06) 100%)',
+      overlayBgTouched: false, // 用户是否手动改过悬浮层背景
       overlayRect: { x: 0.06, y: 0.08, w: 0.88, h: 0.18 }, // 相对视口，拖动/缩放后记忆
       overlayOpacity: 0.35, // 悬浮层整体不透明度（整层一起变，含标题栏与弹幕）
       overlayFade: true, // 每批播完自动淡出
@@ -232,6 +234,8 @@ export function normalizeSettings(s) {
   out.appearance.opacity = clamp01(out.appearance.opacity, 1);
   out.appearance.overlayOpacity = num(out.appearance.overlayOpacity, 0.35, 0.02, 1);
   out.appearance.frameBgTouched = asBool(out.appearance.frameBgTouched, false);
+  out.appearance.overlayBg = String(out.appearance.overlayBg || defaultSettings().appearance.overlayBg);
+  out.appearance.overlayBgTouched = asBool(out.appearance.overlayBgTouched, false);
   out.appearance.frameEnabled = asBool(out.appearance.frameEnabled, true);
   out.appearance.overlayEnabled = asBool(out.appearance.overlayEnabled, true);
   out.appearance.showMeta = asBool(out.appearance.showMeta, true);

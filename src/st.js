@@ -169,30 +169,141 @@ export function getRecentStory(n) {
 
 /* ───────────── 世界书 ───────────── */
 
-/** 列出所有世界书名（按需去重） */
+/**
+ * 世界书清单缓存。
+ *
+ * 坑点：酒馆的 `getContext()` **并不暴露世界书名数组** —— 它只给了
+ * `updateWorldInfoList()`（刷新列表）和 `loadWorldInfo(name)`（按名读）。
+ * 真正的 `world_names` 数组是 `world-info.js` 的模块内部变量。
+ * 所以这里做多层兜底，依次尝试：
+ *   ① ctx.getWorldInfoNames()      某些版本/客户端暴露了这个函数
+ *   ② 动态 import 酒馆的 world-info.js，读它导出的 world_names
+ *   ③ /api/worldinfo/list          服务端直接列目录，最可靠但需要联网请求
+ *   ④ ctx 上各种可能的字段名        旧版本兼容
+ */
+let bookCache = []; // [{ name, fileId }]
+let bookCacheAt = 0;
+const BOOK_CACHE_MS = 15000; // 15 秒内不重复问，避免频繁请求
+
+/** 已有的世界书清单（同步，供 UI 直接用；没数据时为空数组） */
+export function listWorldbookEntries() {
+  return bookCache.slice();
+}
+
+/** 只要名字（UI 显示与日志用） */
 export function listWorldbookNames() {
-  const names = new Set();
+  const names = bookCache.map((b) => b.name).filter(Boolean);
+  if (names.length) return [...new Set(names)];
+
+  // 兜底：上下文里可能直接有数组（旧版本 / 某些客户端）
   const ctx = getCtx();
   try {
-    const list = ctx?.worldInfoList || ctx?.world_info_list || ctx?.world_names || [];
+    const list = ctx?.worldInfoList || ctx?.world_info_list || ctx?.world_names || ctx?.worldNames || [];
     if (Array.isArray(list)) {
-      list.forEach((n) => {
-        const name = typeof n === 'string' ? n : n?.name;
-        if (name) names.add(String(name));
-      });
+      const out = list
+        .map((n) => (typeof n === 'string' ? n : n?.name || n?.file_id))
+        .filter(Boolean)
+        .map(String);
+      return [...new Set(out)];
     }
   } catch {
     /* noop */
   }
-  // 全局开启的世界书（有些版本挂在 extensionSettings 上）
+  return [];
+}
+
+/** 名字 → 文件名（loadWorldInfo 要的是文件名） */
+export function resolveWorldbookFileId(name) {
+  const hit = bookCache.find((b) => b.name === name);
+  return hit?.fileId || name;
+}
+
+async function fetchWorldbookListViaApi() {
   try {
-    const settings = ctx?.extensionSettings || ctx?.extension_settings;
-    const globalBooks = settings?.world_info?.world_info;
-    if (Array.isArray(globalBooks)) globalBooks.forEach((n) => n && names.add(String(n)));
+    const res = await fetch('/api/worldinfo/list', { method: 'POST', headers: requestHeaders() });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!Array.isArray(data)) return null;
+    return data
+      .map((it) => ({
+        name: String(it?.name || it?.file_id || '').trim(),
+        fileId: String(it?.file_id || it?.name || '').trim(),
+      }))
+      .filter((it) => it.name);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 刷新世界书清单。进卡、打开面板、扫描前都可以调。
+ * @param {boolean} [force] 忽略缓存强制刷新
+ * @returns {Promise<object[]>} 最新的 [{name, fileId}]
+ */
+export async function refreshWorldbookNames(force = false) {
+  if (!force && Date.now() - bookCacheAt < BOOK_CACHE_MS && bookCache.length) return listWorldbookEntries();
+
+  const ctx = getCtx();
+  let entries = null;
+
+  // 先让酒馆自己把列表读起来（有些情况下它还没初始化）
+  try {
+    if (ctx && typeof ctx.updateWorldInfoList === 'function') await ctx.updateWorldInfoList();
   } catch {
     /* noop */
   }
-  return [...names];
+
+  // ① 官方函数
+  try {
+    if (ctx && typeof ctx.getWorldInfoNames === 'function') {
+      const names = ctx.getWorldInfoNames();
+      if (Array.isArray(names) && names.length) {
+        entries = names.map((n) => ({ name: String(n), fileId: String(n) }));
+      }
+    }
+  } catch {
+    /* noop */
+  }
+
+  // ② 动态 import 酒馆的世界书模块
+  if (!entries) {
+    for (const path of ['/scripts/world-info.js', './world-info.js', '../../world-info.js']) {
+      try {
+        const mod = await import(/* @vite-ignore */ path);
+        const names = mod?.world_names;
+        if (Array.isArray(names) && names.length) {
+          entries = names.map((n) => ({ name: String(n), fileId: String(n) }));
+          break;
+        }
+      } catch {
+        /* 换下一条路径 */
+      }
+    }
+  }
+
+  // ③ 上下文里已有的数组（旧版本兼容）
+  if (!entries) {
+    try {
+      const list = ctx?.worldInfoList || ctx?.world_info_list || ctx?.world_names || ctx?.worldNames || [];
+      if (Array.isArray(list) && list.length) {
+        entries = list
+          .map((n) => (typeof n === 'string' ? { name: n, fileId: n } : { name: String(n?.name || n?.file_id || ''), fileId: String(n?.file_id || n?.name || '') }))
+          .filter((e) => e.name);
+      }
+    } catch {
+      /* noop */
+    }
+  }
+
+  // ④ 服务端列目录（最可靠，放最后是因为要发一次请求）
+  if (!entries) entries = await fetchWorldbookListViaApi();
+
+  if (entries) {
+    // 两个来源都没有 → 保留旧缓存，不要因为一次失败就把列表清空
+    bookCache = entries;
+    bookCacheAt = Date.now();
+  }
+  return listWorldbookEntries();
 }
 
 /** 当前卡绑定的世界书：{ primary, additional } */
@@ -220,8 +331,10 @@ export function getBoundWorldbooks() {
  */
 export function resolveWorldbookNames(sources) {
   if (Array.isArray(sources) && sources.length) {
+    // 清单还没拿到时不做过滤，避免"一本都读不到"这种静默失败
     const available = new Set(listWorldbookNames());
-    return sources.map(String).filter((n) => !available.size || available.has(n));
+    if (!available.size) return sources.map(String);
+    return sources.map(String).filter((n) => available.has(n));
   }
   const bound = getBoundWorldbooks();
   const set = new Set();
@@ -232,6 +345,7 @@ export function resolveWorldbookNames(sources) {
 
 /**
  * 读一本世界书，归一化成插件内部的条目结构。
+ * 名字和文件名都试一遍 —— 不同来源给的可能是显示名，也可能是文件 basename。
  * @param {string} name
  * @returns {Promise<{name:string, ok:boolean, error:string, entries:object[]}>}
  */
@@ -242,19 +356,29 @@ export async function readWorldbook(name) {
     result.error = '当前酒馆没有暴露 loadWorldInfo()，无法读取世界书';
     return result;
   }
-  try {
-    const raw = await ctx.loadWorldInfo(name);
-    if (!raw) {
-      result.error = '世界书不存在或为空';
+
+  const fileId = resolveWorldbookFileId(name);
+  const tries = fileId && fileId !== name ? [name, fileId] : [name];
+  let lastError = '';
+
+  for (const key of tries) {
+    try {
+      const raw = await ctx.loadWorldInfo(key);
+      if (!raw) {
+        lastError = '世界书不存在或为空';
+        continue;
+      }
+      result.entries = normalizeEntries(raw);
+      result.ok = true;
+      result.error = '';
       return result;
+    } catch (e) {
+      lastError = e?.message ? String(e.message) : String(e);
     }
-    result.entries = normalizeEntries(raw);
-    result.ok = true;
-    return result;
-  } catch (e) {
-    result.error = e?.message ? String(e.message) : String(e);
-    return result;
   }
+
+  result.error = lastError || '读取失败';
+  return result;
 }
 
 /** 兼容 entries 是对象（uid→entry）或数组（老版本）两种形态 */

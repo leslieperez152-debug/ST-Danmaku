@@ -121,7 +121,7 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
     rootEl.addEventListener('click', onFieldChange);
     rootEl.addEventListener('click', onClick);
 
-    ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'scan', 'cleared'].forEach((evt) => {
+    ['settings', 'batch', 'profile', 'viewers', 'busy', 'error', 'chat', 'card', 'books', 'scan', 'cleared'].forEach((evt) => {
       offFns.push(app.on(evt, (payload) => {
         if (evt === 'scan') {
           scanPhase = payload && payload.phase && payload.phase !== 'end' ? payload : null;

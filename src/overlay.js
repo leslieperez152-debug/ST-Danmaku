@@ -95,16 +95,21 @@ export function readRect(doc) {
   };
 }
 
-/** 应用外观设置（透明度 / 字号 / 速度） */
+/** 应用外观设置（透明度 / 字号 / 速度 / 背景） */
 export function applyOverlayStyle(doc, appearance) {
   const root = doc.getElementById(OVERLAY_ID);
   if (!root) return;
   const app = appearance || {};
   const fs = Number(app.fontSize) || 15;
-  root.style.setProperty('--std-ov-opacity', String(app.overlayOpacity ?? 0.14));
+  root.style.setProperty('--std-ov-opacity', String(app.overlayOpacity ?? 0.35));
   root.style.setProperty('--std-ov-fs', `${fs}px`);
   root.style.setProperty('--std-ov-lh', `${Math.round(fs * 1.9)}px`);
   root.style.setProperty('--std-ov-speed', `${Number(app.speed) || 110}px/s`);
+  // 悬浮层背景：由用户在面板里选（预设色块或自由填写），默认给一层很淡的暗色
+  root.style.setProperty(
+    '--std-ov-bg',
+    app.overlayBg || 'linear-gradient(180deg, rgba(0, 0, 0, 0.30) 0%, rgba(0, 0, 0, 0.06) 100%)',
+  );
   // 悬浮层整体略微放大一点，远看更像直播间
   root.classList.toggle('faded', false);
 }
