@@ -330,6 +330,11 @@ function pages(app) {
             '防重叠',
             toggle('appearance.avoidOverlap', a.avoidOverlap, '按"上一条的尾巴让开了没"分轨道，保证同轨不叠'),
           ),
+          row2(
+            '间距倍数',
+            number('appearance.overlapSpacing', a.overlapSpacing, 1, 10, 0.1),
+            '1.0 = 恰好让开；调大就更松。宽度是估算的，所以留点余量，默认 2.2',
+          ),
           '<div class="std-hint">防重叠的<b>代价</b>要知道：速度恒定时，一条弹幕要飞近 2 秒尾巴才让开，所以每条轨道大约 1.5 秒才收得下一条。轨道少的时候，弹幕会被摊得很稀，而且<b>间隔浮动会被抹平成接近等间隔</b>。想要密集刷屏的观感就把「防重叠」关掉，那时允许叠一点。</div>',
           row2('同轨间隔（px）', number('appearance.gap', a.gap, 0, 200, 1)),
           row2('整块不透明度', range('appearance.opacity', a.opacity, 0.1, 1, 0.05), '整块弹幕框（含幕布与文字）一起变'),
@@ -418,6 +423,7 @@ function pages(app) {
               <span class="std-dim">楼层 ${b.anchorId}</span>
               <span class="std-dim">${b.items.length} 条</span>
               <button class="std-btn tiny" data-std-act="replay" data-std-batch="${b.batchNo}">重播</button>
+              <button class="std-btn tiny std-danger" data-std-act="del-batch" data-std-batch="${b.batchNo}" title="删掉这一批（连同它挂的弹幕框）">删</button>
             </div>
             <div class="std-batch-items">${b.items
               .map((d) => `<span class="std-chip" style="color:${esc(d.color || 'inherit')}">${esc(d.昵称)}：${esc(d.内容)}</span>`)
@@ -799,6 +805,13 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
         const res = await app.buildViewers();
         if (!res.ok) setResult('std-api-result', `❌ ${res.error}`);
         btn.disabled = false;
+        render();
+        break;
+      }
+      case 'del-batch': {
+        const n = Number(batchNo);
+        const out = app.removeBatch(n);
+        setResult('std-api-result', out.ok ? `✅ 已删除第 ${n} 批` : `⚠️ ${out.error || '删除失败'}`);
         render();
         break;
       }

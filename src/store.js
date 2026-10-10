@@ -126,6 +126,13 @@ export function defaultSettings() {
        * 喜欢密集刷屏感就把这个关掉，那时是允许叠一点的。
        */
       avoidOverlap: true,
+      /**
+       * 防重叠的间距倍数。
+       *
+       * 宽度是**估算**的（字体、字重、标点都会差一点），所以留一个可调的余量：
+       * 1.0 = 恰好"上一条尾巴让开"；2.2 = 再宽 2.2 倍，观感上明显不挤。
+       */
+      overlapSpacing: 2.2,
       stagger: 0.22, // 基准间隔（秒）：等间隔时相邻两条的出现间隔；有浮动时作为基准
       fontSize: 15,
       gap: 16, // 同轨最小间隔 px
@@ -277,6 +284,7 @@ export function normalizeSettings(s) {
   out.appearance.delayVariance = num(out.appearance.delayVariance, 35, 0, 100);
   out.appearance.stagger = num(out.appearance.stagger, 0.22, 0.02, 2);
   out.appearance.avoidOverlap = asBool(out.appearance.avoidOverlap, true);
+  out.appearance.overlapSpacing = num(out.appearance.overlapSpacing, 2.2, 1, 10);
   out.appearance.fontSize = num(out.appearance.fontSize, 15, 8, 48);
   out.appearance.frameHeight = num(out.appearance.frameHeight, 148, 48, 600);
   out.appearance.gap = num(out.appearance.gap, 16, 0, 200);

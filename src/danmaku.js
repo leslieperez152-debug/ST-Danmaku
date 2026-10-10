@@ -702,6 +702,11 @@ export function assignLanesAndDelays(items, opts = {}) {
   const speed = Math.max(20, Number(opts.speed) || 110);
   const fontSize = Math.max(8, Number(opts.fontSize) || 15);
   const gapPx = Math.max(0, opts.gapPx === undefined ? 20 : Number(opts.gapPx));
+  /**
+   * 间距倍数：把"上一条尾巴让开"所需的时间再放大的系数。
+   * 宽度是**估算**的（不同字体、字重、标点宽度都有误差），所以留一个可调的余量。
+   */
+  const spaceScale = Math.min(10, Math.max(1, Number(opts.spaceScale) || 1));
   const textPadPx = Math.max(0, Number(opts.textPadPx) || 0);
   const rand = typeof opts.rand === 'function' ? opts.rand : Math.random;
   const speedVarPct = Math.min(60, Math.max(0, Number(opts.speedVarPct) || 0));
@@ -758,9 +763,9 @@ export function assignLanesAndDelays(items, opts = {}) {
       // 间隔就会差那么几毫秒（幽灵般的 5ms 偏差）。要舍入也只在上报时舍，不参与计算。
       估宽: Math.round(w * 100) / 100,
     };
-    // 这个轨道要等**这一条自己的宽度 + 净间隔**全部让开。
+    // 这个轨道要等**这一条自己的宽度 + 净间隔**全部让开，再乘上间距倍数。
     // 间隔也向上取整到毫秒，与时刻同一口径。
-    laneFreeAt[pick] = t + Math.ceil(((w + gapPx) / speed) * 1000) / 1000;
+    laneFreeAt[pick] = t + Math.ceil((((w + gapPx) * spaceScale) / speed) * 1000) / 1000;
   }
   return out;
 }

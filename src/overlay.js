@@ -184,11 +184,15 @@ export function playOverlay(doc, items, opts = {}) {
   root.classList.remove('faded');
 
   const laneH = Math.round((Number(app.fontSize) || 15) * 1.9);
-  // 轨道数按**舞台本身**的高度算（不含标题栏），并且**不能少于这批弹幕实际用到的轨道数** ——
-  // 少了就会把多余的轨道取模压回前面的轨道，本来分开的弹幕又叠到一起。
+  /**
+   * 轨道数一律用**舞台里真能放下的行数**（不含标题栏）。
+   *
+   * ❌ 不要用 `max(计划轨道数, 能放的行数)`：那样行高会变成 `stageH / 行数`，
+   * **比文字本身还矮**，相邻两行的字就叠在一起 —— 看起来就是"弹幕重合"，
+   * 而且怎么调间隔都没用（问题不在间隔）。
+   */
   const stageH = stage.clientHeight || root.clientHeight || 160;
-  const fitLanes = Math.max(1, Math.floor(stageH / laneH));
-  const lanes = Math.max(fitLanes, effectiveLanes(items, 1));
+  const lanes = Math.max(1, Math.floor(stageH / laneH));
   const baseSpeed = Math.max(20, overlaySpeedOf(app));
   const width = root.clientWidth || 800;
   // 每条用自己的速度（生成时定死），重播保持一致

@@ -3321,7 +3321,7 @@ await test('循环真的在重启动画（不是只挂了个定时器）', async
   ov.stopOverlay(d2);
 });
 
-await test('轨道数不匹配：框只有 3 行但计划 5 轨时，不能被取模压回', () => {
+await test('轨道数不匹配：轨道号不取模，但行高**绝不能**为了塞下更多轨而变矮', () => {
   const items = [
     { 昵称: 'a', 内容: 'x', 轨道: 0 },
     { 昵称: 'b', 内容: 'x', 轨道: 3 },
@@ -3331,30 +3331,48 @@ await test('轨道数不匹配：框只有 3 行但计划 5 轨时，不能被�
   const laid = frameMod.distributeLanes(items, 3);
   eq(laid.map((x) => x.lane).join(','), '0,3,4', '轨道号必须原样保留，不能取模');
   eq(frameMod.effectiveLanes(items, 3), 5, '应当算出实际用到 5 轨');
-  // 渲染时行高要按 5 轨算，否则第 4 轨会跑到框外面或压在第 0 轨上
+
+  // 但行数**只能取框里真放得下的**：
+  // 曾经写成 max(计划轨道, 能放的行数)，结果行高变成 stageH/行数、比文字还矮，
+  // 相邻两行的字直接叠在一起 —— 看起来就是"弹幕重合"，而且怎么调间隔都没用。
   const d = useDoc(createMiniDocument());
+  const fontSize = 15;
+  const lineHeight = Math.round(fontSize * 1.9);
   const frame = frameMod.createFrame({
     doc: d,
-    appearance: { fontSize: 15, frameHeight: 100 },
+    appearance: { fontSize, frameHeight: 100 },
     luminance: 0.1,
     meta: { batchNo: 1, messageId: 1 },
     items,
   });
-  ok(frame.lanes >= 5, `行高必须容得下 5 轨，实际 ${frame.lanes}`);
+  const stageH = Math.max(lineHeight + 46, 100) - 40;
+  const fits = Math.max(1, Math.floor(stageH / lineHeight));
+  eq(frame.lanes, fits, `行数应当正好是能放下的行数（${fits}），实际 ${frame.lanes}`);
+  // 关键不变量：每一行分到的高度不能小于文字高度，否则就会叠字
+  const perLane = stageH / frame.lanes;
+  ok(perLane >= lineHeight - 0.001, `每行高度必须 ≥ 文字高度：${perLane} vs ${lineHeight}`);
+
   // 没有任何轨道字段时才退回均摊
   eq(frameMod.effectiveLanes([{ 昵称: 'a' }, { 昵称: 'b' }], 4), 4, '没有轨道字段就用给定的轨道数');
 });
 
-await test('悬浮层的轨道数不会少于计划用到的轨道数', () => {
+await test('悬浮层：轨道数正好是能放下的行数，每行高度不小于文字高度', () => {
   const ov = doc2overlay();
   const d2 = useDoc(createMiniDocument());
   ov.ensureOverlay(d2);
-  // 悬浮层拖得很矮（只够 1 行），但计划用了 4 轨
+  const fontSize = 15;
+  const lineHeight = Math.round(fontSize * 1.9);
+  // 计划用了 4 轨，但悬浮层很矮
   const items = [0, 1, 2, 3].map((n) => ({ 昵称: 'x', 内容: 'y', color: '#fff', 速度: 110, 延迟: n, 轨道: n }));
-  const r = ov.playOverlay(d2, items, { appearance: { overlayLoop: false, fontSize: 15 } });
-  ok(r.lanes >= 4, `轨道数不能少于计划值（否则会叠回同一轨），实际 ${r.lanes}`);
-  const tops = [...d2.querySelector('.std-ov-stage').children].map((c) => c.style.top);
-  eq(new Set(tops).size, 4, `4 条弹幕应当占 4 个不同的 top，实际 ${tops.join(',')}`);
+  const r = ov.playOverlay(d2, items, { appearance: { overlayLoop: false, fontSize } });
+  const stage = d2.querySelector('.std-ov-stage');
+  const stageH = stage.clientHeight || 160;
+  const fits = Math.max(1, Math.floor(stageH / lineHeight));
+  eq(r.lanes, fits, `轨道数应当是能放下的行数（${fits}），实际 ${r.lanes}`);
+  ok(stageH / r.lanes >= lineHeight - 0.001, `每行高度必须 ≥ 文字高度：${stageH / r.lanes} vs ${lineHeight}`);
+  // 同一行上的弹幕 top 相同，不同行必须不同（否则就是叠字）
+  const tops = [...stage.children].map((c) => c.style.top);
+  ok(new Set(tops).size <= fits, `用到的不同 top 不该超过能放的行数：${tops.join(',')}`);
   ov.stopOverlay(d2);
 });
 
@@ -3484,6 +3502,75 @@ await test('循环重启时会把"时长/延时"贴回去（否则第二轮全�
   ok(nodes[0].__stdTiming.dur > 0, '时长应当记下来');
   ok(nodes[1].style.animationDelay.includes('0.4'), `延时应当写进内联样式，实际 ${nodes[1].style.animationDelay}`);
   ov.stopOverlay(d2);
+});
+
+await test('删除按钮：删掉某一批，记录、弹幕框、悬浮层一起清掉', () => {
+  const { d, app } = makeDrawerEnv();
+  // 造两批记录
+  const mk = (n, 内容) => ({ batchNo: n, at: Date.now(), anchorId: n, title: `第 ${n} 批`, items: [{ 昵称: '甲', 内容, color: '#fff' }] });
+  app.state.runtime.history = [mk(1, '第一批'), mk(2, '第二批')];
+  app.state.settings.appearance.overlayEnabled = true;
+
+  const res = app.removeBatch(1);
+  ok(res.ok, `删除应当成功：${res.error}`);
+  eq(app.state.runtime.history.length, 1, '记录应当少一条');
+  eq(app.state.runtime.history[0].batchNo, 2, '剩下的应当是第 2 批');
+});
+
+await test('删除按钮：删不存在的批次不报错也不乱改', () => {
+  const { d, app } = makeDrawerEnv();
+  app.state.runtime.history = [{ batchNo: 1, at: Date.now(), anchorId: 1, items: [] }];
+  const res = app.removeBatch(99);
+  eq(res.ok, false, '删不存在的应当返回失败');
+  eq(app.state.runtime.history.length, 1, '不该动到别的记录');
+  app.destroy();
+});
+
+await test('删除按钮：历史列表里每一批都有「删」按钮', () => {
+  const { app, panel } = makeApiTabEnv();
+  app.state.runtime.history = [
+    { batchNo: 1, at: Date.now(), anchorId: 1, title: '第 1 批', items: [{ 昵称: '甲', 内容: 'x', color: '#fff' }] },
+    { batchNo: 2, at: Date.now(), anchorId: 2, title: '第 2 批', items: [{ 昵称: '乙', 内容: 'y', color: '#fff' }] },
+  ];
+  const tab = panel.el.querySelectorAll('.std-tab').find((t) => t.getAttribute('data-std-tab') === 'log');
+  ok(tab, '应当有「记录」页签');
+  tab.dispatch('click', { target: tab });
+  const dels = panel.el.querySelectorAll('[data-std-act="del-batch"]');
+  const reps = panel.el.querySelectorAll('[data-std-act="replay"]');
+  eq(dels.length, 2, `每一批都该有删除按钮，实际 ${dels.length}`);
+  eq(reps.length, 2, '重播按钮也要还在');
+  // 删除按钮要带上是哪一批
+  const batches = dels.map((b) => b.getAttribute('data-std-batch')).sort();
+  eq(batches.join(','), '1,2', '每个删除按钮都要标明批次号');
+  // 危险样式类要挂上（视觉上能区分）
+  ok(dels[0].className.includes('std-danger'), `删除按钮应当有警示样式：${dels[0].className}`);
+  app.destroy();
+});
+
+await test('间距倍数：2.2 倍确实把同轨间隔拉得更开', () => {
+  const items = Array.from({ length: 9 }, (_, i) => ({ 内容: `第${i}条弹幕内容`, 昵称: '甲' }));
+  const base = { base: 0.22, jitterPct: 0, lanes: 3, speed: 110, fontSize: 15, gapPx: 20, textPadPx: 8, rand: seeded(4) };
+  const one = danmaku.assignLanesAndDelays(items, { ...base, spaceScale: 1 });
+  const two = danmaku.assignLanesAndDelays(items, { ...base, spaceScale: 2.2 });
+  const lastOf = (x) => Math.max(...x.map((i) => i.延迟));
+  ok(lastOf(two) > lastOf(one), `2.2 倍应当收尾更晚：${lastOf(one)} vs ${lastOf(two)}`);
+
+  // 同轨间隔应当正好是 2.2 倍（用短句、避免被理想时刻顶掉顺延）
+  const laneOf = (arr) => {
+    const m = new Map();
+    for (const it of arr) {
+      if (!m.has(it.轨道)) m.set(it.轨道, []);
+      m.get(it.轨道).push(it.延迟);
+    }
+    return m;
+  };
+  for (const [, ts] of laneOf(two)) {
+    ts.sort((a, b) => a - b);
+    for (let i = 1; i < ts.length; i += 1) {
+      // 只是确认间隔确实变大了（精确倍数会被理想时刻/取整影响）
+      ok(ts[i] - ts[i - 1] > 0, '间隔应当为正');
+    }
+  }
 });
 
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');

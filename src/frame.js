@@ -57,12 +57,17 @@ export function createFrame({ doc, appearance, luminance, meta, items, onAction 
   const fontSize = Number(app.fontSize) || 15;
   const lineHeight = Math.round(fontSize * 1.9);
   const height = Math.max(lineHeight + 46, Number(app.frameHeight) || 148);
-  // 行高按**这批弹幕实际用到的轨道数**算。
-  // 如果按"框能放几行"算，而计划用的轨道比它多，多出来的轨道就会被取模压回前面的轨道
-  // —— 于是本来分开的弹幕又叠到一起（这正是"防重叠了还重合"的原因）。
-  const planLanes = effectiveLanes(items, 1);
-  const fitLanes = Math.max(1, Math.floor((height - 40) / lineHeight));
-  const lanes = Math.max(planLanes, fitLanes);
+  /**
+   * 行数只用**框里真能放下的行数**。
+   *
+   * ⚠️ 这里曾经写成 `max(计划轨道数, 能放的行数)` —— 想的是"别把计划用到的轨道压掉"，
+   * 结果行高变成 `stageH / 行数`，**比文字本身还矮**：相邻两行的字直接叠在一起。
+   * 那看起来就是"弹幕重合"，而且怎么调间隔都没用（问题根本不在间隔上）。
+   *
+   * 轨道压缩的坏处（同轨间隔被放慢）比"行高不够导致文字叠字"轻得多，
+   * 所以这里一律**取能放下的行数**。
+   */
+  const lanes = Math.max(1, Math.floor((height - 40) / lineHeight));
 
   const colors = items.map((it) => it.color).filter(Boolean);
   const palette = colors.length === items.length ? colors : makePalette(items.length, luminance);

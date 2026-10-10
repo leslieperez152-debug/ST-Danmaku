@@ -389,6 +389,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
           // 逐条估宽要用字号；余量给字重与估算误差
           fontSize: s.appearance.fontSize,
           textPadPx: 8,
+          // 间距倍数：宽度是估算的，留一个可调余量（默认 2.2 倍，明显不挤）
+          spaceScale: s.appearance.overlapSpacing,
           // 同轨会被统一到同一个速度（否则快的会追上慢的并叠上）
           speedVarPct: s.appearance.speedVariance,
         });
@@ -531,6 +533,12 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     };
   }
 
+  /**
+   * 悬浮层当前在放的那一批的编号（用来判断"删的正好是它在放的"）。
+   * 声明必须在 renderBatch 之前 —— `let` 有暂时性死区，写在后面会在渲染时直接报错。
+   */
+  let lastShownBatch = 0;
+
   function renderBatch(batch, { messageId, animate = true } = {}) {
     const s = state.settings;
     const app = s.appearance;
@@ -584,7 +592,10 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
     if (app.overlayEnabled) {
       // 尺寸已经在上面应用过了，这里只负责播
-      if (animate) playOverlay(doc, batch.items, { appearance: app });
+      if (animate) {
+        playOverlay(doc, batch.items, { appearance: app });
+        lastShownBatch = Number(batch.batchNo) || 0;
+      }
     }
   }
 
@@ -609,11 +620,40 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       gapPx: a.gap,
       fontSize: a.fontSize,
       textPadPx: 8,
+      spaceScale: a.overlapSpacing,
       speedVarPct: a.speedVariance,
     });
     // 就地替换，保持 batch.items 的引用不变（frame / overlay 拿的是同一个数组）
     batch.items.length = 0;
     batch.items.push(...next);
+  }
+
+  /**
+   * 删掉某一批记录。
+   *
+   * 要"连坐"清掉的东西：
+   *   · 历史里的这一条；
+   *   · 它挂的那个弹幕框（否则框还在、记录没了，点重播也找不到）；
+   *   · 如果它正好是悬浮层当前在放的那一批，把悬浮层也清掉，免得"删了还在飞"。
+   */
+  function removeBatch(batchNo) {
+    const n = Number(batchNo);
+    const hist = state.runtime.history;
+    const idx = hist.findIndex((b) => Number(b.batchNo) === n);
+    if (idx < 0) return { ok: false, error: '没有这一批' };
+
+    const [gone] = hist.splice(idx, 1);
+    clearFrameAt(doc, gone.anchorId);
+    state.frames.delete(gone.anchorId);
+
+    if (lastShownBatch === n) {
+      stopOverlay(doc);
+      lastShownBatch = 0;
+    }
+
+    persistRuntime();
+    api.emit('cleared');
+    return { ok: true };
   }
 
   /** 重播某一批（历史面板用） */
@@ -977,6 +1017,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     runBatch,
     onAssistantMessage,
     replayBatch,
+    removeBatch,
     renderBatch,
     refreshInjection,
     buildInjectionText,

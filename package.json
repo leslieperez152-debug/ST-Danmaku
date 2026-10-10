@@ -1,6 +1,6 @@
 {
   "name": "st-danmaku",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A card-agnostic live-stream danmaku (bullet comment) extension for SillyTavern / TauriTavern. Reads the active world book to build a viewer profile, then generates on-world danmaku that is tied to the story but never touches the main prompt.",
   "private": true,
   "type": "module",

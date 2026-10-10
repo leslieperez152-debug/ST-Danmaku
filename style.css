@@ -1033,6 +1033,17 @@ textarea.std-input {
   justify-content: center;
 }
 
+/* 删除类按钮：给一点红色警示，避免误点 */
+.std-btn.std-danger {
+  color: #ffb3b3;
+  border-color: rgba(255, 120, 120, 0.45);
+}
+
+.std-btn.std-danger:hover {
+  background: rgba(255, 90, 90, 0.18);
+  color: #fff;
+}
+
 .std-dw-subbtns {
   display: flex;
   flex-wrap: wrap;
