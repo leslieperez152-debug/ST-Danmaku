@@ -7,6 +7,6 @@
   "css": "style.css",
   "author": "ST-Danmaku contributors",
   "version": "0.1.0",
-  "homePage": "https://github.com/YOUR-NAME/ST-Danmaku",
-  "auto_update": false
+  "homePage": "https://github.com/leslieperez152-debug/ST-Danmaku",
+  "auto_update": true
 }
