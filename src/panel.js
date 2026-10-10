@@ -211,6 +211,31 @@ function pages(app) {
             toggle('scan.followCard', s.scan.followCard, '开着：进哪张卡就读哪张卡绑定的世界书（手动勾选不会带到别的卡上）。关掉则保留你手动选的书'),
           ),
           sep(),
+          '<div class="std-sec">语风世界书（让弹幕真的像弹幕）</div>',
+          '<div class="std-hint">单独指定一本专门放<b>弹幕风格 / 口癖 / 梗 / 台词样本</b>的世界书。它和上面那些"世界事实"是两件事：<br>世界书回答"这个世界是什么样"，这本回答"这个世界的观众具体怎么说话"。读到的原文会被抽成范本，直接当作例句喂给生成弹幕那一步。</div>',
+          row2(
+            '语风世界书',
+            (() => {
+              const books = app.listAllWorldbooks();
+              const cur = s.scan.styleBook;
+              const opts = [`<option value="" ${cur ? '' : 'selected'}>（不用）</option>`];
+              for (const b of books) opts.push(`<option value="${esc(b)}" ${b === cur ? 'selected' : ''}>${esc(b)}</option>`);
+              if (cur && !books.includes(cur)) opts.push(`<option value="${esc(cur)}" selected>${esc(cur)}（当前值，不在列表里）</option>`);
+              return `<select class="std-input" data-std-path="scan.styleBook" data-std-type="string">${opts.join('')}</select>`;
+            })(),
+            '选一本专放语料的世界书；不选就没有范本，弹幕会更容易写得像对话',
+          ),
+          row2('语风读取上限（字）', number('scan.styleBookBudget', s.scan.styleBookBudget, 1000, 200000, 1000), '单独预算，不占上面世界书的额度'),
+          row2('抽出多少条范本', number('scan.styleSampleCount', s.scan.styleSampleCount, 4, 80, 1), '范本会直接进提示词，太多会挤占篇幅'),
+          (() => {
+            const prof = st.profile;
+            if (!prof?.styleBookName) return '';
+            const n = (prof.styleSamples || []).length;
+            return `<div class="std-hint">上次扫描：语风世界书《${esc(prof.styleBookName)}》→ 抽出 ${n} 条范本${
+              n ? `，例如：${prof.styleSamples.slice(0, 3).map((x) => esc(x)).join(' / ')}` : ''
+            }</div>`;
+          })(),
+          sep(),
           '<div class="std-sec">预算</div>',
           row2('取样正文上限（字）', number('scan.entryCharBudget', s.scan.entryCharBudget, 0, 2000000, 1000), '这本书的总字数是上限；超出部分按优先级取舍'),
           row2('档案字数上限（字）', number('scan.summaryCharBudget', s.scan.summaryCharBudget, 100, 20000, 100)),
@@ -386,7 +411,7 @@ const esc = (s) =>
 /** 三步扫描的进度条（没在扫时返回空串） */
 function scanProgressHtml(scanPhase) {
   if (!scanPhase) return '';
-  const label = { start: '准备中', index: '① 索引条目', sample: '② 按预算取样正文', summarize: '③ 总结成观众档案' }[scanPhase.phase] || '处理中';
+  const label = { start: '准备中', index: '① 索引条目', sample: '② 按预算取样正文', summarize: '③ 总结成观众档案', style: '④ 抽取语风范本' }[scanPhase.phase] || '处理中';
   return `<div class="std-progress"><span class="std-spin"></span> ${esc(label)}${
     scanPhase.detail ? `：${esc(scanPhase.detail)}` : ''
   }</div>`;
@@ -511,9 +536,9 @@ function profileEditor(prof) {
     ['factions', '势力与群像'],
     ['naming', '称呼体系'],
     ['lexicon', '本土词汇'],
-    ['manner', '语气与措辞'],
-    ['taboos', '禁区'],
+    ['manner', '措辞腔调'],
     ['interests', '观众兴奋点'],
+    ['voiceNote', '腔调是怎么推出来的'],
   ];
   return (
     `<div class="std-profile">${fields

@@ -2248,6 +2248,131 @@ await test('「额外请求头」已经彻底去掉（界面与设置里都不�
   app.destroy();
 });
 
+await test('档案分成两层：事实来自世界书、观众腔调由 AI 按世界观生成', () => {
+  const sys = scan.profileSystemPrompt();
+  // A 类：只能来自材料
+  ok(/世界事实/.test(sys), '应当明确"世界事实"这一类');
+  ok(/只能来自材料/.test(sys), '应当说明事实层只许照材料写');
+  ok(/绝对不要编造|不要编造/.test(sys), '应当明确禁止编造事实');
+  // B 类：要主动生成
+  ok(/观众腔调/.test(sys), '应当明确"观众腔调"这一类');
+  ok(/自己推理生成|主动生成/.test(sys), '应当要求腔调层主动推理生成');
+  ok(/称呼体系/.test(sys) && /本土词汇/.test(sys), '腔调层要包含称呼体系与本土词汇');
+  // 体裁约束不能因为"生成"而丢掉
+  ok(/直播弹幕/.test(sys), '仍然必须点明体裁是直播弹幕');
+  // 用户提示词里也要讲清两类怎么用
+  const user = scan.profileUserPrompt({ outline: 'x', sample: 'y', stats: { books: 1, entriesTotal: 3, charsTotal: 100, entriesRead: 3, charsRead: 100, summaryBudget: 1200 } });
+  ok(/只许照材料写/.test(user), '用户提示里要重申事实层只许照材料');
+  ok(/推理生成/.test(user), '用户提示里要重申腔调层靠推理');
+});
+
+await test('世界书为空时：事实留空，但腔调仍要尽量给（且不发明专有名词）', () => {
+  const user = scan.profileUserPrompt({
+    outline: '',
+    sample: '',
+    stats: { books: 0, entriesTotal: 0, charsTotal: 0, entriesRead: 0, charsRead: 0, summaryBudget: 1200 },
+  });
+  ok(/没有读到任何世界书正文/.test(user), '应当明确告知材料为空');
+  ok(/hasWorldbook 设为 false/.test(user), '应当要求把 hasWorldbook 关掉');
+  ok(/B 类仍然要尽量给/.test(user), '腔调层仍应尽量生成');
+  ok(/不要发明具体的专有名词/.test(user), '但不能凭空发明专有名词');
+});
+
+await test('档案渲染进弹幕提示词时，事实与腔调分开标注', () => {
+  const profile = store.emptyProfile();
+  profile.data = {
+    ...profile.data,
+    channelName: '围观席',
+    worldName: '测试界',
+    stage: '山谷',
+    naming: '称"当家的"',
+    lexicon: '刀、雾',
+    manner: '短句爱起哄',
+  };
+  const text = danmaku.renderProfileForPrompt(profile);
+  ok(/世界事实/.test(text), '应当有世界事实段');
+  ok(/观众腔调/.test(text), '应当有观众腔调段');
+  ok(text.indexOf('世界事实') < text.indexOf('观众腔调'), '事实段应当排在前面');
+  ok(/测试界/.test(text) && /称"当家的"/.test(text) && /刀、雾/.test(text), '各字段都应当渲染出来');
+});
+
+await test('旧版档案（没有 voiceNote 字段）也能正常渲染', () => {
+  const profile = store.emptyProfile();
+  // 模拟旧缓存：只有老字段
+  profile.data = { worldName: '旧世界', stage: '旧的', naming: '旧称呼', lexicon: '旧词' };
+  const text = danmaku.renderProfileForPrompt(profile);
+  ok(/旧世界/.test(text) && /旧称呼/.test(text), '旧档案应当照常可用');
+});
+
+await test('新建档案的字段结构包含两层、语料位与 voiceNote', () => {
+  const d = store.blankProfileData();
+  for (const k of ['worldName', 'stage', 'factions', 'naming', 'lexicon', 'manner', 'interests', 'channelName', 'hasWorldbook', 'voiceNote']) {
+    ok(k in d, `档案结构里应当有 ${k}`);
+  }
+  ok(Array.isArray(d.styleSamples), '应当有语风语料样本位');
+  ok('styleBookName' in d, '应当记录语料来自哪本');
+  ok(!('taboos' in d), '「禁区」字段应当已经去掉');
+});
+
+await test('提示词里不再给观众设禁区（弹幕是百无禁忌的）', () => {
+  const sys = scan.profileSystemPrompt();
+  const user = scan.profileUserPrompt({ outline: 'x', sample: 'y', stats: { books: 1, entriesTotal: 1, charsTotal: 10, entriesRead: 1, charsRead: 10, summaryBudget: 800 } });
+  ok(!/taboos/.test(sys) && !/禁区/.test(sys), `系统提示里不该再提禁区：${sys.slice(0, 80)}`);
+  ok(!/不要给观众设/.test(user), '用户提示里不该有这类自我限制');
+  ok(/百无禁忌/.test(sys), '应当明确说明弹幕发言没有禁忌');
+});
+
+await test('语风语料：从素材里拆候选行并清洗标记', () => {
+  const text = [
+    '# 弹幕风格',
+    '- 来了来了',
+    '1. 这什么操作啊',
+    '**前排**',
+    '「就这？」',
+    '------',
+    '',
+    '这段是正经的场景叙述，写得很长很长，完全不像一句弹幕该有的样子，应该被长度过滤掉。',
+    '来了来了',
+  ].join('\n');
+  const lines = scan.candidateStyleLines(text);
+  ok(lines.includes('来了来了'), '应当保留普通短句');
+  ok(lines.includes('这什么操作啊'), '应当去掉序号');
+  ok(lines.includes('前排'), '应当去掉 markdown 粗体');
+  ok(lines.includes('就这？'), '应当去掉引号');
+  ok(!lines.includes('# 弹幕风格'), '标题不该进候选');
+  ok(!lines.some((l) => l.length > 60), '太长的行应当被过滤');
+  ok(!lines.includes('------'), '分隔线不该进候选');
+  eq(lines.filter((l) => l === '来了来了').length, 1, '重复的应当去重');
+});
+
+await test('语风语料的提示词要求"一个字都不许改"', () => {
+  const sys = scan.stylePickPrompt();
+  ok(/一个字都不要改写|一个字都不许改|不要改写/.test(sys), '必须要求保留原文');
+  ok(/直播弹幕/.test(sys), '要说明挑选标准是像直播弹幕');
+  const user = scan.stylePickUserPrompt(['甲', '乙'], 2);
+  ok(/必须是上面出现过的原句/.test(user), '要约束只能用候选里的原句');
+});
+
+await test('语风范本会作为 few-shot 进弹幕提示词', () => {
+  const profile = store.emptyProfile();
+  profile.data = { ...profile.data, channelName: '围观席', manner: '短句爱起哄' };
+  profile.styleSamples = ['来了来了', '就这？'];
+  profile.styleBookName = '语风素材';
+
+  const prompt = danmaku.batchUserPrompt({ profile, story: '', viewers: [], count: 15, fourthWall: 0 });
+  ok(/语风范本/.test(prompt), '应当有语风范本段');
+  ok(prompt.includes('来了来了') && prompt.includes('就这？'), '范本原句应当出现在提示词里');
+  ok(/不要原样照抄重复/.test(prompt), '要提醒可以借鉴但别照抄');
+  ok(prompt.indexOf('语风范本') < prompt.indexOf('【破次元度】'), '范本段应当排在破次元度之前');
+});
+
+await test('没有语风范本时，提示词里不会出现空的范本段', () => {
+  const profile = store.emptyProfile();
+  profile.data = { ...profile.data, manner: '短句' };
+  const prompt = danmaku.batchUserPrompt({ profile, story: '', viewers: [], count: 15, fourthWall: 0 });
+  ok(!/语风范本/.test(prompt), '没范本就不该有这一段');
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

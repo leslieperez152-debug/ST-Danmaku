@@ -50,6 +50,15 @@ export function defaultSettings() {
       commentOnly: false, // true = 只拿条目名/备注做索引，不读正文（极省，但档案会浅）
       summaryCharBudget: 1200, // 总结后的档案字数上限
       includeDisabled: false, // 是否把停用的条目也算进索引
+      /**
+       * 语风世界书：单独一本，专门放"弹幕风格 / 口癖 / 梗 / 台词样本"的语料。
+       * 它和"世界事实"是两件事 —— 世界书回答"这个世界是什么样"，
+       * 这本回答"这个世界的观众具体怎么说话"。读到的原文会被抽成样本，
+       * 当作 few-shot 直接喂给生成弹幕那一步，弹幕才会像弹幕而不是像对话。
+       */
+      styleBook: '',
+      styleBookBudget: 12000, // 语风世界书的读取预算（单独算，不占上面那个预算）
+      styleSampleCount: 24, // 抽出多少条语料样本
     },
 
     /* 观众 */
@@ -206,6 +215,9 @@ export function normalizeSettings(s) {
   out.scan.commentOnly = asBool(out.scan.commentOnly, false);
   out.scan.includeDisabled = asBool(out.scan.includeDisabled, false);
   out.scan.followCard = asBool(out.scan.followCard, true);
+  out.scan.styleBook = String(out.scan.styleBook || '');
+  out.scan.styleBookBudget = num(out.scan.styleBookBudget, 12000, 1000, 200000);
+  out.scan.styleSampleCount = num(out.scan.styleSampleCount, 24, 4, 80);
   if (!Array.isArray(out.scan.sources)) out.scan.sources = null;
 
   out.audience.poolSize = num(out.audience.poolSize, 10, 0, 60);
@@ -283,20 +295,33 @@ export function emptyProfile() {
 
 /**
  * 档案的字段是"任何世界观都成立"的中性槽位，不预设题材。
- * hasWorldbook=false 时，这些槽位会被"边看边学"的正文观察逐步填上。
+ *
+ * 字段分成两层，取数方式不同（扫描提示词里会讲清楚）：
+ *   · 事实层（worldName / stage / factions）：**只能来自世界书材料**，
+ *     材料里没有就留空，绝不编造。
+ *   · 观众腔调层（naming / lexicon / manner / channelName / interests）：
+ *     **由 AI 按世界观自己推理生成** —— 因为条目里通常不会写"观众怎么称呼台上的人"，
+ *     靠推理比从原文里抠更自然。
  */
 export function blankProfileData() {
   return {
+    /* 事实层：来自世界书 */
     worldName: '',
     stage: '', // 舞台/年代/世界运转的基本样貌
     factions: '', // 势力、阵营、群像构成
+
+    /* 观众腔调层：按世界观生成 */
     naming: '', // 称呼体系：观众怎么称呼台上的人、怎么自称
     lexicon: '', // 本土词汇、专有名词、该世界特有的说法
-    manner: '', // 说话的语气与节奏（仍然是"直播弹幕"这个体裁，只是措辞本土化）
-    taboos: '', // 该世界观里不该出现的说法/禁区
+    manner: '', // 说话的语气与节奏（体裁永远是"直播弹幕"，这里只描述措辞怎么本土化）
     interests: '', // 这批观众会为什么兴奋、会挑什么刺
-    channelName: '', // 直播间名字（面板与弹幕框标题用）
-    hasWorldbook: false,
+    channelName: '', // 直播间名字
+
+    hasWorldbook: false, // 有没有可用的世界书材料（影响的是"事实层"）
+    voiceNote: '', // 腔调层是怎么来的（自己推的 / 书上抄的）
+    /** 语风语料样本：来自"语风世界书"的真实台词，当 few-shot 用 */
+    styleSamples: [],
+    styleBookName: '', // 语料来自哪本
   };
 }
 
@@ -317,7 +342,10 @@ export function getCachedProfile(storage, key) {
   const cache = loadProfileCache(storage);
   const hit = cache[key];
   if (!hit || !hit.data) return null;
-  return { ...emptyProfile(), ...hit, data: { ...blankProfileData(), ...hit.data } };
+  const data = { ...blankProfileData(), ...hit.data };
+  // 数组字段不走字符串归一，这里单独兜一下
+  if (!Array.isArray(data.styleSamples)) data.styleSamples = [];
+  return { ...emptyProfile(), ...hit, data };
 }
 
 export function putCachedProfile(storage, key, profile) {

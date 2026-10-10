@@ -128,24 +128,45 @@ export function buildOutline(entries, opts = {}) {
 
 export function profileSystemPrompt() {
   return [
-    '你是"直播观众考古员"。你的任务不是写故事，而是看材料、产出一份【观众档案】，交给另一个程序去模仿这批观众发弹幕。',
+    '你是"直播观众考古员"。你的任务不是写故事，而是产出一份【观众档案】，交给另一个程序去模仿这批观众发弹幕。',
     '',
     '产出要求：',
     '1. 只输出一个 JSON 对象，不要任何解释、不要代码围栏。',
-    '2. 每个字段都要短、要具体、要能直接被用来造句。写不出东西的字段就留空字符串，不要编造。',
-    '3. 材料里没有的信息，宁可留空也不要脑补。',
+    '2. 每个字段都要短、要具体、要能直接被用来造句。',
+    '',
+    '【最重要：两类字段的取数方式完全不同，别搞混】',
+    '',
+    'A 类 · 世界事实 —— **只能来自材料**',
+    '   - worldName（世界名）、stage（舞台与基本样貌）、factions（势力与群像）',
+    '   - 材料里没有的，宁可留空字符串，**绝对不要编造**。这些是"这个世界是什么样"的客观信息。',
+    '',
+    'B 类 · 观众腔调 —— **请你按世界观自己推理生成，不要只从材料里抄**',
+    '   - naming（称呼体系）、lexicon（本土词汇）、manner（措辞腔调）、interests（兴奋点）、channelName（直播间名）',
+    '   - 理由：原始设定里通常根本不会写"观众怎么称呼台上的人""观众会怎么吐槽"，',
+    '     这些必须靠你理解这个世界之后推出来。所以这一类**要主动生成、要具体、要能用**。',
+    '   - 推理依据：这个世界的**年代、社会结构、力量体系、身份等级、行业行话**决定了观众会怎么说话。',
+    '     例如：',
+    '       · 有明确的实力等级体系 → 观众会用等级词相互抬杠（"他这水平也配"）',
+    '       · 有门派/组织 → 观众会自称某派支持者、互相拉踩',
+    '       · 有官职爵位 → 观众会拿头衔称呼、拿头衔开玩笑',
+    '       · 市井年代 → 观众会用行话、口头禅、市井比喻',
+    '       · 现代/赛博 → 观众会用平台腔、缩写、数据化表达',
+    '   - 无论怎么本土化，**体裁永远是"直播弹幕"**：短句、抢话、起哄、催更、抬杠。',
+    '     manner 字段只描述"措辞怎么本土化"，不要去描述别的体裁。',
+    '   - 注意：弹幕是网络发言，**百无禁忌**。不要给观众设什么"不该说的话"，',
+    '     也不要写"他们会保持礼貌"这类约束 —— 观众该骂就骂、该起哄就起哄，这才是弹幕。',
     '',
     '字段含义：',
-    '- worldName：这个世界/这部作品的名字（材料里没有就留空）',
-    '- stage：舞台与基本样貌 —— 什么年代、什么环境、日常在过什么日子、力量/规则体系是什么',
-    '- factions：势力、阵营、组织、群像的构成（谁和谁不对付）',
-    '- naming：**称呼体系** —— 观众会怎么称呼台上的人（用什么头衔、什么绰号），观众之间怎么互相称呼',
-    '- lexicon：本土词汇与专有名词 —— 这个世界特有的说法、术语、行话、地名、招式名，列 10~25 个',
-    '- manner：观众说话的语气与节奏。注意：**体裁永远是"直播弹幕"**（短句、抢话、@人、刷屏、催更、起哄），这个字段只描述"措辞怎么本土化"，不要描述别的体裁',
-    '- taboos：这个世界观里不该出现的说法或禁区（比如某些词在设定里是禁忌、某些称呼是冒犯）',
-    '- interests：这批观众会为什么兴奋、会挑什么刺、爱看什么、爱骂什么',
-    '- channelName：给这个直播间起个名字，要贴合世界观（8~16 字）',
-    '- hasWorldbook：材料里是否有可用的世界观信息（true / false）',
+    '- worldName：（A）这个世界/作品叫什么。材料没有就留空。',
+    '- stage：（A）舞台与基本样貌 —— 什么年代、什么环境、日常在过什么日子、力量或规则体系是什么。',
+    '- factions：（A）势力、阵营、组织、群像构成（谁和谁不对付）。',
+    '- naming：（B，请生成）观众怎么称呼台上的人（头衔/绰号/门派/职称，给几个具体例子），观众之间怎么互称。',
+    '- lexicon：（B，请生成）10~25 个这个世界特有的说法、术语、行话、地名、招式名 —— 要能被直接塞进弹幕里用。',
+    '- manner：（B，请生成）观众说话的语气与节奏，用一句话说清（仍然是直播弹幕这个体裁）。',
+    '- interests：（B，请生成）这批观众会为什么兴奋、会挑什么刺、爱看什么、爱骂什么。',
+    '- channelName：（B，请生成）给这个直播间起个贴合世界观的名字，8~16 字。',
+    '- hasWorldbook：材料里是否有可用的世界事实（true / false）。',
+    '- voiceNote：一句话说明你的"观众腔调"是从哪些线索推出来的（例如"依据门派等级与江湖行话"）。',
   ].join('\n');
 }
 
@@ -163,8 +184,17 @@ export function profileUserPrompt({ outline, sample, stats }) {
       `本次实际读取 ${stats.entriesRead} 条、${stats.charsRead} 字；档案字数上限 ${stats.summaryBudget} 字。`,
   );
   parts.push('');
+  parts.push('【怎么用这些材料】');
+  parts.push('· A 类（世界名 / 舞台 / 势力）：**只许照材料写**，材料没说就留空，不要编。');
+  parts.push('· B 类（称呼体系 / 本土词汇 / 措辞腔调 / 观众兴奋点 / 直播间名）：**照世界观的逻辑自己推理生成**，');
+  parts.push('  要具体到能直接塞进弹幕，不要只抄材料里的原句，也不要写成泛泛而谈。');
+  parts.push('');
+  if (!stats.entriesRead) {
+    parts.push('⚠️ 这次没有读到任何世界书正文。那 A 类全部留空、hasWorldbook 设为 false；');
+    parts.push('   B 类仍然要尽量给（可以是很通用的中文口语腔调），但**不要发明具体的专有名词**。');
+    parts.push('');
+  }
   parts.push(`请输出观众档案 JSON，所有字段加起来不要超过 ${stats.summaryBudget} 字。`);
-  parts.push('如果材料不足以判断世界观（比如材料为空），就把 hasWorldbook 设为 false，其余字段尽量留空 —— 不要硬编。');
   return parts.join('\n');
 }
 
@@ -183,15 +213,169 @@ export function profileJsonSchema() {
         naming: str,
         lexicon: str,
         manner: str,
-        taboos: str,
         interests: str,
         channelName: str,
         hasWorldbook: { type: 'boolean' },
+        voiceNote: str,
       },
-      required: ['worldName', 'stage', 'factions', 'naming', 'lexicon', 'manner', 'taboos', 'interests', 'channelName', 'hasWorldbook'],
+      required: [
+        'worldName',
+        'stage',
+        'factions',
+        'naming',
+        'lexicon',
+        'manner',
+        'interests',
+        'channelName',
+        'hasWorldbook',
+        'voiceNote',
+      ],
       additionalProperties: false,
     },
   };
+}
+
+/* ───────────── 语风语料（单独的"语风世界书"） ───────────── */
+
+/**
+ * 把语风世界书的正文拆成候选行。
+ * 语风书通常是人工整理的"弹幕/台词/口癖"清单，一行一条，或带序号、引号、markdown 标记。
+ */
+export function candidateStyleLines(text) {
+  const out = [];
+  const seen = new Set();
+  for (let raw of String(text || '').split(/\r?\n/)) {
+    let line = raw
+      .replace(/^\s*[-*•·]\s+/, '') // 列表符号
+      .replace(/^\s*\d+[.、)]\s*/, '') // 序号
+      .replace(/^\s*[「『"'"'【\[]\s*/, '') // 左引号/括号
+      .replace(/\s*[」』"'"'】\]]\s*$/, '') // 右引号/括号
+      .replace(/\*\*/g, '') // markdown 粗体
+      .trim();
+    if (!line) continue;
+    if (line.length < 2 || line.length > 60) continue; // 太长的不像一句弹幕
+    if (/^#{1,6}\s/.test(line)) continue; // 标题
+    if (/^[=—\-_~]{3,}$/.test(line)) continue; // 分隔线
+    if (seen.has(line)) continue;
+    seen.add(line);
+    out.push(line);
+  }
+  return out;
+}
+
+export function stylePickPrompt() {
+  return [
+    '你要从一份"语风素材"里挑出最能代表**这个直播间观众说话方式**的句子，当作之后生成弹幕的范本。',
+    '',
+    '挑选标准（按重要性排序）：',
+    '1. 必须像**直播弹幕**：短、口语、带情绪、常常不完整；不是旁白、不是正经文、不是设定说明。',
+    '2. 覆盖不同的说话姿态：起哄、抬杠、催更、玩梗、@人、纯情绪、懂行解说、突然的关心……',
+    '3. 保留原文的用词与口癖，**一个字都不要改写**（这是范本，改了就没味道了）。',
+    '4. 长度尽量 4~40 字；明显是整段叙述的句子不要。',
+    '5. 如果素材里重复出现同一句话，只留一条。',
+    '',
+    '只输出 JSON：{"样本":["原文1","原文2", ...]}',
+  ].join('\n');
+}
+
+export function stylePickUserPrompt(lines, want) {
+  return [
+    `下面是从语风素材里拆出来的 ${lines.length} 行候选。请挑出最多 ${want} 条作为范本。`,
+    '如果其中有很多并不像弹幕（比如设定描述、场景叙述），就少挑一些，只挑真正像弹幕的。',
+    '',
+    '【候选】',
+    lines.join('\n'),
+    '',
+    `输出 JSON：{"样本":[...]}，最多 ${want} 条，必须是上面出现过的原句。`,
+  ].join('\n');
+}
+
+export function stylePickJsonSchema(want) {
+  return {
+    name: 'danmaku_style_samples',
+    description: '从语风素材里挑出的弹幕范本',
+    strict: true,
+    value: {
+      type: 'object',
+      properties: {
+        样本: { type: 'array', items: { type: 'string' }, maxItems: Math.max(1, want) },
+      },
+      required: ['样本'],
+      additionalProperties: false,
+    },
+  };
+}
+
+/**
+ * 读"语风世界书"并抽出语料样本。
+ * @returns {Promise<{ok:boolean, samples:string[], bookName:string, chars:number, error:string}>}
+ */
+export async function extractStyleSamples(input) {
+  const { api, scan } = input || {};
+  const log = typeof input?.log === 'function' ? input.log : () => {};
+  const progress = typeof input?.progress === 'function' ? input.progress : () => {};
+  const bookName = String(scan?.styleBook || '').trim();
+  const result = { ok: false, samples: [], bookName, chars: 0, error: '' };
+  if (!bookName) return result;
+
+  progress({ phase: 'style', detail: `正在读语风世界书《${bookName}》…` });
+  const res = await readWorldbook(bookName);
+  if (!res.ok) {
+    result.error = `语风世界书《${bookName}》读取失败：${res.error}`;
+    log(result.error, 'warn');
+    return result;
+  }
+
+  // 只读预算内的正文
+  const budget = Math.max(1000, Number(scan?.styleBookBudget) || 12000);
+  let text = '';
+  for (const e of res.entries) {
+    if (text.length >= budget) break;
+    const chunk = [e.comment ? `〔${e.comment}〕` : '', e.content].filter(Boolean).join('\n');
+    text += `${chunk}\n`;
+  }
+  text = text.slice(0, budget);
+  result.chars = text.length;
+
+  const lines = candidateStyleLines(text);
+  if (!lines.length) {
+    result.error = `语风世界书《${bookName}》里没找到可用的短句`;
+    log(result.error, 'warn');
+    return result;
+  }
+
+  const want = Math.max(4, Number(scan?.styleSampleCount) || 24);
+  // 候选不多时干脆直接用，省一次调用
+  if (lines.length <= want) {
+    result.ok = true;
+    result.samples = lines;
+    log(`语风语料：候选 ${lines.length} 条，全部采用`, 'info');
+    return result;
+  }
+
+  progress({ phase: 'style', detail: `正在从 ${lines.length} 行候选中挑范本…` });
+  const picked = await chatJson({
+    api,
+    label: '语风语料挑选',
+    system: stylePickPrompt(),
+    user: stylePickUserPrompt(lines.slice(0, 400), want),
+    jsonSchema: stylePickJsonSchema(want),
+  });
+  if (picked.ok && picked.value && Array.isArray(picked.value.样本)) {
+    const list = picked.value.样本.map((s) => String(s).trim()).filter((s) => s && lines.includes(s));
+    if (list.length) {
+      result.ok = true;
+      result.samples = [...new Set(list)].slice(0, want);
+      log(`语风语料：《${bookName}》抽出 ${result.samples.length} 条范本`, 'info');
+      return result;
+    }
+  }
+  // 挑不出来就退化成"取前 N 条"，不能让这一步把整个扫描拖垮
+  result.ok = true;
+  result.samples = lines.slice(0, want);
+  result.error = '';
+  log(`语风语料：自动挑选没成功，改用前 ${result.samples.length} 条候选（不影响使用）`, 'warn');
+  return result;
 }
 
 /* ───────────── 主流程 ───────────── */
@@ -312,9 +496,20 @@ export async function scanWorldbooks(input) {
     }
     data[k] = typeof res.value[k] === 'string' ? res.value[k].trim() : '';
   }
-  // 超过上限就硬裁，宁可截断也不让下游 prompt 失控
+  // 超过上限就硬裁，宁可截断也不让下游 prompt 失控。
+  // 顺序有讲究：先保事实层（前面几个），再保观众腔调层；voiceNote 这种解释性文字放最后。
   let total = 0;
-  for (const k of ['stage', 'factions', 'naming', 'lexicon', 'manner', 'taboos', 'interests', 'worldName', 'channelName']) {
+  for (const k of [
+    'worldName',
+    'stage',
+    'factions',
+    'naming',
+    'lexicon',
+    'manner',
+    'interests',
+    'channelName',
+    'voiceNote',
+  ]) {
     const v = data[k];
     if (!v) continue;
     const room = summaryBudget - total;
@@ -332,8 +527,24 @@ export async function scanWorldbooks(input) {
   profile.data = data;
   profile.books = bookStats;
 
-  progress({ phase: 'done', detail: `档案完成：${total} 字` });
-  log(`档案完成：${total} 字（上限 ${summaryBudget} 字）`);
+  /* ④ 语风语料：单独读一本，抽出真实台词当范本 */
+  if (String(scan?.styleBook || '').trim()) {
+    const style = await extractStyleSamples({ api, scan, log, progress });
+    profile.styleSamples = style.samples;
+    profile.styleBookName = style.bookName;
+    profile.stats.styleSamples = style.samples.length;
+    profile.stats.styleChars = style.chars;
+    if (!style.ok && style.error) log(style.error, 'warn');
+  } else {
+    profile.styleSamples = [];
+    profile.styleBookName = '';
+  }
+
+  progress({ phase: 'done', detail: `档案完成：${total} 字${profile.styleSamples.length ? ` + ${profile.styleSamples.length} 条语风范本` : ''}` });
+  log(
+    `档案完成：${total} 字（上限 ${summaryBudget} 字）` +
+      (profile.styleSamples.length ? `，语风范本 ${profile.styleSamples.length} 条` : ''),
+  );
   return { ok: true, profile, error: '', note: res.note || '' };
 }
 

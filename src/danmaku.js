@@ -154,33 +154,53 @@ export function renderProfileForPrompt(profile) {
   // 注意：档案存在但字段全空（没扫世界书 / 扫了但书是空的）时，
   // 也必须走"靠正文推断"的引导分支，否则提示词里会只剩一句"（暂无档案）"。
   const d = profile?.data || {};
-  const rows = [
+  const facts = [
     ['世界名', d.worldName],
     ['舞台', d.stage],
     ['势力', d.factions],
+  ].filter(([, v]) => v && String(v).trim());
+  const voice = [
     ['称呼体系', d.naming],
     ['本土词汇', d.lexicon],
-    ['语气与措辞', d.manner],
-    ['禁区', d.taboos],
+    ['措辞腔调', d.manner],
     ['观众兴奋点', d.interests],
   ].filter(([, v]) => v && String(v).trim());
 
-  if (!rows.length) {
+  if (!facts.length && !voice.length) {
     return [
       '（还没有世界观档案：没有可读的世界书，或者还没扫描过）',
       '此时请完全依靠下面的正文来判断这是什么样的世界：从人名、称谓、器物、事件、说话方式里推断该用什么口气。',
       '拿不准的时候，就用最普通的中文口语吐槽，不要发明设定、不要编造没出现过的专有名词。',
     ].join('\n');
   }
-  const head = d.channelName ? `直播间名：《${d.channelName}》\n` : '';
-  return head + rows.map(([k, v]) => `- ${k}：${v}`).join('\n');
-}
 
+  const out = [];
+  if (d.channelName) out.push(`直播间名：《${d.channelName}》`);
+  if (facts.length) {
+    out.push('世界事实（照这个世界的实际情况说话）：');
+    out.push(facts.map(([k, v]) => `- ${k}：${v}`).join('\n'));
+  }
+  if (voice.length) {
+    out.push('观众腔调（这是这个直播间的观众说话的方式，照着用）：');
+    out.push(voice.map(([k, v]) => `- ${k}：${v}`).join('\n'));
+  }
+  return out.join('\n');
+}
 export function batchUserPrompt({ profile, story, viewers, count, fourthWall, recentGags }) {
   const parts = [];
   parts.push('【本直播间观众档案】');
   parts.push(renderProfileForPrompt(profile));
   parts.push('');
+
+  // 语风范本：这是让弹幕"像弹幕"的关键 —— 给真实台词当 few-shot，
+  // 比给一堆"要短句、要口语"的形容词管用得多。
+  const samples = profile?.styleSamples || [];
+  if (samples.length) {
+    parts.push(`【语风范本】下面这些是**这个直播间观众真实说过的话**（来自语风素材）${profile.styleBookName ? `：《${profile.styleBookName}》` : ''}。`);
+    parts.push('照着这个腔调、这个用词、这个长度写新弹幕；**可以借鉴说法，但不要原样照抄重复**。');
+    parts.push(samples.map((s) => `· ${s}`).join('\n'));
+    parts.push('');
+  }
 
   if (viewers?.length) {
     parts.push('【本直播间的常驻观众（尽量让其中一部分在本批出现，昵称要原样使用）】');

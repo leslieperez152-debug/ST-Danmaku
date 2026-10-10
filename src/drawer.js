@@ -344,7 +344,7 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
     if (progEl) {
       if (scanPhase) {
-        const label = { start: '准备中', index: '① 索引条目', sample: '② 按预算取样正文', summarize: '③ 总结成观众档案' }[scanPhase.phase] || '处理中';
+        const label = { start: '准备中', index: '① 索引条目', sample: '② 按预算取样正文', summarize: '③ 总结成观众档案', style: '④ 抽取语风范本' }[scanPhase.phase] || '处理中';
         progEl.innerHTML = `<span class="std-dw-spin"></span> ${esc(label)}${scanPhase.detail ? `：${esc(scanPhase.detail)}` : ''}`;
         progEl.classList.add('show');
       } else {
