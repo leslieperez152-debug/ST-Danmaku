@@ -60,7 +60,11 @@ export class MiniElement {
     this.classList = new ClassList(this);
     this._text = '';
     this._listeners = new Map();
-    this._rect = { left: 0, top: 0, width: 640, height: 160, right: 640, bottom: 160 };
+    // 默认"有布局"：显式 _rect 优先；没有则按父元素宽度自动排布（见 _computedRect）
+    this._rect = null;
+    this._autoLayout = true;
+    this._autoWidth = 640;
+    this._autoHeight = 160;
   }
 
   get className() {
@@ -69,11 +73,18 @@ export class MiniElement {
   set className(v) {
     this._className = String(v || '');
     this.classList.set = new Set(this._className.split(/\s+/).filter(Boolean));
+    this.attributes.class = this._className;
   }
 
+  /**
+   * 文本/HTML 的存储约定（必须和真实 DOM 一致，否则会出现"文本莫名消失"的假故障）：
+   *   · 元素自己那段文本放在 _text；
+   *   · 有子节点时，textContent = 自己那段 + 所有子节点的 textContent；
+   *   · innerHTML 由子树重新生成。
+   */
   get textContent() {
-    if (this.children.length) return this.children.map((c) => c.textContent).join('');
-    return this._text;
+    if (!this.children.length) return this._text;
+    return this._text + this.children.map((c) => c.textContent).join('');
   }
   set textContent(v) {
     this.children = [];
@@ -82,15 +93,27 @@ export class MiniElement {
 
   set innerHTML(v) {
     this.children = [];
-    this._text = String(v ?? '');
+    this._text = '';
+    const html = String(v ?? '');
+    if (!html.trim()) {
+      this._text = html;
+      return;
+    }
+    // 真正解析，让用 innerHTML 构建的 UI 在自检里也能被查询与断言
+    parseHtmlInto(this, html);
   }
   get innerHTML() {
-    return this._text;
+    return this._text + this.children.map((c) => serializeNode(c)).join('');
   }
 
   setAttribute(k, v) {
     this.attributes[k] = String(v);
     if (k === 'id') this._id = String(v);
+    // class 属性与 classList 必须同步（真实 DOM 就是这样，缺了它解析出的节点查不到类）
+    if (k === 'class') {
+      this.classList.set = new Set(String(v).split(/\s+/).filter(Boolean));
+      this._className = [...this.classList.set].join(' ');
+    }
     if (k.startsWith('data-')) {
       const key = k
         .slice(5)
@@ -114,6 +137,29 @@ export class MiniElement {
     this.setAttribute('id', v);
   }
 
+  /** 表单元素的 IDL 属性：type / value / checked 读写都会落到属性上 */
+  get type() {
+    return this.attributes.type ?? '';
+  }
+  set type(v) {
+    this.setAttribute('type', v);
+  }
+  get value() {
+    return this._value !== undefined ? this._value : this.attributes.value ?? '';
+  }
+  set value(v) {
+    this._value = String(v ?? '');
+    this.attributes.value = this._value;
+  }
+  get checked() {
+    return !!this._checked;
+  }
+  set checked(v) {
+    this._checked = !!v;
+    if (v) this.attributes.checked = '';
+    else delete this.attributes.checked;
+  }
+
   appendChild(node) {
     if (!node) return node;
     node.parentElement = this;
@@ -126,6 +172,8 @@ export class MiniElement {
     const idx = parent.children.indexOf(this);
     if (position === 'afterend') parent.children.splice(idx + 1, 0, node);
     else parent.children.splice(idx, 0, node);
+    // 关键：必须设置 parentElement，否则后续 querySelectorAll / 位置计算全错，
+    // 之前这个替身漏了这一步，导致"弹幕框是否挤压正文"的检查形同虚设。
     node.parentElement = parent;
     return node;
   }
@@ -138,25 +186,82 @@ export class MiniElement {
   }
 
   get clientWidth() {
-    return this._rect.width;
+    return this._rect ? this._rect.width : this._computedRect().width;
   }
   get clientHeight() {
-    return this._rect.height;
+    return this._rect ? this._rect.height : this._computedRect().height;
   }
   get offsetWidth() {
-    return this._rect.width;
+    return this.clientWidth;
   }
   get offsetHeight() {
-    return this._rect.height;
+    return this.clientHeight;
   }
   get offsetLeft() {
-    return this._rect.left;
+    return this._computedRect().left;
   }
   get offsetTop() {
-    return this._rect.top;
+    return this._computedRect().top;
   }
+
   getBoundingClientRect() {
-    return { ...this._rect };
+    return { ...this._computedRect() };
+  }
+
+  /** 深拷贝（playFrame 会给每条弹幕做一份克隆） */
+  cloneNode(deep = false) {
+    const copy = new MiniElement(this.tagName, this.ownerDocument);
+    copy._className = this._className;
+    copy.classList.set = new Set(this.classList.set);
+    copy._text = this._text;
+    copy.attributes = { ...this.attributes };
+    copy.dataset = { ...this.dataset };
+    copy._autoWidth = this._autoWidth;
+    copy._autoHeight = this._autoHeight;
+    copy._hostRect = this._hostRect ? { ...this._hostRect } : null;
+    copy.style = this.style;
+    if (deep) {
+      for (const child of this.children) copy.appendChild(child.cloneNode(true));
+    }
+    return copy;
+  }
+
+  /**
+   * 计算矩形。没有显式 _rect 时：
+   *   · 宽度/横向继承最近的有布局的祖先（浏览器里块级元素就是占满父宽）；
+   *   · 纵向从锚点下方开始（insertAdjacentElement('afterend') 的真实效果）。
+   * 这样"弹幕框有没有压住消息"才能被真的验证出来。
+   */
+  _computedRect() {
+    if (this._rect) return this._rect;
+
+    // 显式挂载锚点：块级元素插在锚点之后，就从锚点下方开始
+    if (this._hostRect) {
+      const w = this._autoWidth || this._hostRect.width;
+      const h = this._autoHeight || 160;
+      return {
+        left: this._hostRect.left,
+        top: this._hostRect.bottom,
+        width: w,
+        height: h,
+        right: this._hostRect.left + w,
+        bottom: this._hostRect.bottom + h,
+      };
+    }
+
+    let node = this.parentElement;
+    while (node) {
+      if (node._rect) {
+        const w = this._autoWidth || node._rect.width;
+        const h = this._autoHeight || 160;
+        return { left: node._rect.left, top: node._rect.bottom, width: w, height: h, right: node._rect.left + w, bottom: node._rect.bottom + h };
+      }
+      node = node.parentElement;
+    }
+    const root = this.ownerDocument?.defaultView || {};
+    const w = this._autoWidth || root.innerWidth || 1280;
+    const h = this._autoHeight || root.innerHeight || 800;
+    return { left: 0, top: 0, width: w, height: h, right: w, bottom: h };
   }
 
   addEventListener(type, fn) {
@@ -168,7 +273,13 @@ export class MiniElement {
   }
   dispatch(type, ev = {}) {
     const e = { type, target: this, stopPropagation() {}, preventDefault() {}, ...ev };
-    for (const fn of this._listeners.get(type) || []) fn(e);
+    // 先给本节点，再冒泡给祖先（真实 DOM 的事件流）。
+    // 监听器抛错要暴露出来，不能静默吞掉 —— 否则测试会出现"事件没生效"的假象。
+    let node = this;
+    while (node) {
+      for (const fn of node._listeners.get(type) || []) fn(e);
+      node = node.parentElement;
+    }
   }
 
   closest(selector) {
@@ -291,19 +402,162 @@ function matchOne(el, partIn) {
   return true;
 }
 
+/** 已创建的迷你文档（真实环境只有一份 document，替身用它来兜底按 id 查找） */
+const MINI_DOCUMENTS = [];
+
+/* ───────────── 极简 HTML 解析 ─────────────
+   只覆盖插件自己生成的那部分 HTML：
+   标签 / 属性（带引号或不带）/ 自闭合 / 文本 / 常见实体。
+   目的是让 innerHTML 构建的界面在自检里真的存在，而不是一串死字符串。 */
+
+const VOID_TAGS = new Set(['br', 'hr', 'img', 'input', 'meta', 'link', 'source', 'track', 'wbr', 'col', 'area', 'base', 'embed', 'param']);
+
+function decodeEntities(s) {
+  return String(s)
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+export function parseHtmlInto(root, html) {
+  const doc = root.ownerDocument;
+  if (!doc) return;
+  const stack = [root];
+  let i = 0;
+  const top = () => stack[stack.length - 1];
+
+  while (i < html.length) {
+    const lt = html.indexOf('<', i);
+    if (lt < 0) {
+      appendText(top(), html.slice(i));
+      break;
+    }
+    if (lt > i) appendText(top(), html.slice(i, lt));
+
+    // 注释
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt);
+      i = end < 0 ? html.length : end + 3;
+      continue;
+    }
+
+    const gt = findTagEnd(html, lt);
+    if (gt < 0) {
+      appendText(top(), html.slice(lt));
+      break;
+    }
+    const raw = html.slice(lt + 1, gt);
+    i = gt + 1;
+
+    if (raw.startsWith('/')) {
+      const name = raw.slice(1).trim().toLowerCase();
+      for (let k = stack.length - 1; k >= 1; k--) {
+        if (stack[k].tagName === name.toUpperCase()) {
+          stack.length = k;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const selfClosing = raw.endsWith('/');
+    const body = selfClosing ? raw.slice(0, -1) : raw;
+    const m = /^([a-zA-Z][\w-]*)/.exec(body);
+    if (!m) continue;
+    const tag = m[1].toLowerCase();
+    const el = new MiniElement(tag, doc);
+    applyAttrs(el, body.slice(m[1].length));
+
+    top().appendChild(el);
+    if (!selfClosing && !VOID_TAGS.has(tag)) stack.push(el);
+  }
+}
+
+function appendText(el, text) {
+  const decoded = decodeEntities(text);
+  if (!decoded) return;
+  el._text += decoded;
+}
+
+/** 把节点序列化回 HTML（innerHTML 的 getter 用） */
+function serializeNode(el) {
+  const tag = el.tagName.toLowerCase();
+  const attrs = Object.keys(el.attributes)
+    .map((k) => ` ${k}="${String(el.attributes[k]).replace(/"/g, '&quot;')}"`)
+    .join('');
+  if (VOID_TAGS.has(tag)) return `<${tag}${attrs}>`;
+  const inner = el._text + el.children.map((c) => serializeNode(c)).join('');
+  return `<${tag}${attrs}>${inner}</${tag}>`;
+}
+
+/** 找到标签的结束 '>'，跳过引号里的内容 */
+function findTagEnd(html, from) {
+  let quote = '';
+  for (let i = from + 1; i < html.length; i++) {
+    const ch = html[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '>') return i;
+  }
+  return -1;
+}
+
+function applyAttrs(el, attrStr) {
+  const re = /([\w:@-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))|([\w:@-]+)/g;
+  let m;
+  while ((m = re.exec(attrStr))) {
+    if (m[5]) {
+      el.setAttribute(m[5], '');
+      continue;
+    }
+    const name = m[1];
+    const value = m[2] ?? m[3] ?? m[4] ?? '';
+    el.setAttribute(name, decodeEntities(value));
+  }
+}
+
 export function createMiniDocument() {
   const doc = {
     body: null,
     documentElement: null,
     head: null,
     readyState: 'complete',
+    activeElement: null,
     _byId: new Map(),
-    _listeners: new Map(),
-    createElement(tag) {
+    _listeners: new Map(),    createElement(tag) {
       return new MiniElement(tag, doc);
     },
     getElementById(id) {
-      return doc._byId.get(id) || null;
+      // 真实 DOM 里 getElementById 只能找到"还在文档里"的节点。
+      // 这里必须做同样的可达性校验，否则被移除的旧节点会被重新拿出来，
+      // 造成"事件不生效""状态区不更新"这类假故障。
+      const reachable = (el) => {
+        if (!el) return false;
+        if (el.ownerDocument !== doc) return false;
+        let node = el;
+        while (node) {
+          if (node === doc.body) return true;
+          node = node.parentElement;
+        }
+        return false;
+      };
+      const own = doc._byId.get(id);
+      if (reachable(own)) return own;
+      for (const other of MINI_DOCUMENTS) {
+        if (other !== doc) continue;
+        const hit = other._byId.get(id);
+        if (reachable(hit)) return hit;
+      }
+      return null;
     },
     querySelector(sel) {
       return doc.body.querySelector(sel);
@@ -321,8 +575,13 @@ export function createMiniDocument() {
     defaultView: null,
   };
   doc.body = new MiniElement('body', doc);
+  doc.body._rect = { left: 0, top: 0, width: 1280, height: 800, right: 1280, bottom: 800 };
   doc.documentElement = new MiniElement('html', doc);
   doc.head = new MiniElement('head', doc);
+  // 对话区：铺满视口的块级容器，插件定位 / 挂载都要用到
+  doc._chat = new MiniElement('div', doc);
+  doc._chat.className = 'chat';
+  doc._chat.setAttribute('id', 'chat');
 
   // 让 appendChild 到 body 的带 id 元素能被 getElementById 找到
   const origAppend = doc.body.appendChild.bind(doc.body);
@@ -338,11 +597,23 @@ export function createMiniDocument() {
     localStorage: makeMemoryStorage(),
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
     getComputedStyle: () => ({ backgroundColor: 'rgba(0, 0, 0, 0)', color: 'rgb(255,255,255)' }),
-    addEventListener() {},
-    removeEventListener() {},
+    _listeners: new Map(),
+    addEventListener(type, fn) {
+      if (!this._listeners.has(type)) this._listeners.set(type, new Set());
+      this._listeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      this._listeners.get(type)?.delete(fn);
+    },
+    /** 测试专用：派发 window 级事件 */
+    __emit(type, ev = {}) {
+      const e = { type, stopPropagation() {}, preventDefault() {}, ...ev };
+      for (const fn of this._listeners.get(type) || []) fn(e);
+    },
   };
   doc.defaultView.document = doc;
 
+  MINI_DOCUMENTS.push(doc);
   return doc;
 }
 

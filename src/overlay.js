@@ -17,6 +17,8 @@ const MIN_H = 80;
 /** 拿到（或创建）悬浮层的根节点 */
 export function ensureOverlay(doc) {
   let root = doc.getElementById(OVERLAY_ID);
+  // 必须是本文档里的那个（多文档环境下别拿错）
+  if (root && root.ownerDocument && root.ownerDocument !== doc) root = null;
   if (root) return root;
 
   root = doc.createElement('div');
@@ -110,7 +112,14 @@ export function applyOverlayStyle(doc, appearance) {
 export function showOverlay(doc, on = true) {
   const root = doc.getElementById(OVERLAY_ID);
   if (!root) return;
-  root.style.display = on ? '' : 'none';
+  if (on) root.removeAttribute('data-std-hidden');
+  else root.setAttribute('data-std-hidden', '1');
+}
+
+/** 悬浮层当前是否可见 */
+export function isOverlayVisible(doc) {
+  const root = doc.getElementById(OVERLAY_ID);
+  return !!root && root.getAttribute('data-std-hidden') !== '1';
 }
 
 export function destroyOverlay(doc) {
@@ -176,7 +185,9 @@ export function playOverlay(doc, items, opts = {}) {
   return { duration, totalMs, lanes };
 }
 
-/** 立刻停止并清空（比如用户关掉了悬浮层） */
+/**
+ * 立刻停止并清空（比如用户关掉了悬浮层）
+ */
 export function stopOverlay(doc) {
   const root = doc.getElementById(OVERLAY_ID);
   if (!root || !root.__std) return;
@@ -189,33 +200,39 @@ export function stopOverlay(doc) {
 /* ───────────── 拖动 / 缩放 ───────────── */
 
 /**
- * 装上拖动与缩放行为。返回一个卸载函数。
+ * 装上拖动与缩放行为。
+ *
+ * 指针策略是关键（之前写错的地方）：
+ *   · 整个悬浮层 pointer-events: none —— 保证它永远不吃聊天区的事件；
+ *   · **只有标题栏和右下角手柄** pointer-events: auto —— 所以拖动/拉伸永远有效，
+ *     不依赖 hover 状态（第一次实现挂在 hover 上，结果经常拖不动）；
+ *   · 幕布区域（.std-ov-stage）始终穿透，正文该怎么点还怎么点。
+ *
  * @param {Document} doc
- * @param {(rect:object)=>void} onCommit 拖动/缩放结束时回调，用来持久化位置
+ * @param {(rect:object|null)=>void} onCommit 拖动/缩放结束时回调；null 表示用户点了 ✕ 隐藏
+ * @returns {() => void} 卸载函数
  */
 export function enableInteractions(doc, onCommit) {
   const root = ensureOverlay(doc);
   const win = doc.defaultView || globalThis;
+  const { bar, resizer } = root.__std;
   let drag = null;
 
-  const onPointerDownBar = (ev) => {
-    if (ev.target?.closest?.('[data-std-ov-hide]')) return;
+  const begin = (ev, mode) => {
+    if (mode === 'move' && ev.target?.closest?.('[data-std-ov-hide]')) return;
+    if (ev.button !== undefined && ev.button !== 0) return; // 只响应左键
     const r = root.getBoundingClientRect();
-    drag = { mode: 'move', startX: ev.clientX, startY: ev.clientY, rect: { x: r.left, y: r.top, w: r.width, h: r.height } };
+    drag = { mode, startX: ev.clientX, startY: ev.clientY, rect: { x: r.left, y: r.top, w: r.width, h: r.height } };
     root.classList.add('dragging');
     win.addEventListener('pointermove', onPointerMove);
     win.addEventListener('pointerup', onPointerUp);
-    ev.preventDefault();
+    ev.preventDefault?.();
   };
 
-  const onPointerDownResize = (ev) => {
-    const r = root.getBoundingClientRect();
-    drag = { mode: 'resize', startX: ev.clientX, startY: ev.clientY, rect: { x: r.left, y: r.top, w: r.width, h: r.height } };
-    root.classList.add('dragging');
-    win.addEventListener('pointermove', onPointerMove);
-    win.addEventListener('pointerup', onPointerUp);
-    ev.preventDefault();
-    ev.stopPropagation();
+  const onBarDown = (ev) => begin(ev, 'move');
+  const onResizeDown = (ev) => {
+    ev.stopPropagation?.();
+    begin(ev, 'resize');
   };
 
   const onPointerMove = (ev) => {
@@ -225,7 +242,8 @@ export function enableInteractions(doc, onCommit) {
     const vw = win.innerWidth || 1280;
     const vh = win.innerHeight || 800;
     if (drag.mode === 'move') {
-      const x = Math.max(-drag.rect.w * 0.4, Math.min(vw - drag.rect.w * 0.6, drag.rect.x + dx));
+      // 允许左右各露出一部分，纵向别跑出屏幕
+      const x = Math.max(-drag.rect.w * 0.5, Math.min(vw - drag.rect.w * 0.5, drag.rect.x + dx));
       const y = Math.max(0, Math.min(vh - 24, drag.rect.y + dy));
       root.style.left = `${Math.round(x)}px`;
       root.style.top = `${Math.round(y)}px`;
@@ -241,35 +259,29 @@ export function enableInteractions(doc, onCommit) {
     win.removeEventListener('pointermove', onPointerMove);
     win.removeEventListener('pointerup', onPointerUp);
     root.classList.remove('dragging');
+    const wasDrag = !!drag;
     drag = null;
+    if (!wasDrag) return;
     const rect = readRect(doc);
     if (rect && typeof onCommit === 'function') onCommit(rect);
   };
 
-  const bar = root.__std.bar;
-  const resizer = root.__std.resizer;
-  bar.addEventListener('pointerdown', onPointerDownBar);
-  resizer.addEventListener('pointerdown', onPointerDownResize);
-
-  const onHide = (ev) => {
+  const onHideClick = (ev) => {
     if (!ev.target?.closest?.('[data-std-ov-hide]')) return;
     showOverlay(doc, false);
     stopOverlay(doc);
-    if (typeof onCommit === 'function') onCommit(null); // null 表示"用户主动隐藏了"
+    if (typeof onCommit === 'function') onCommit(null);
   };
-  root.addEventListener('click', onHide);
+
+  bar.addEventListener('pointerdown', onBarDown);
+  resizer.addEventListener('pointerdown', onResizeDown);
+  root.addEventListener('click', onHideClick);
 
   return () => {
-    bar.removeEventListener('pointerdown', onPointerDownBar);
-    resizer.removeEventListener('pointerdown', onPointerDownResize);
-    root.removeEventListener('click', onHide);
+    bar.removeEventListener('pointerdown', onBarDown);
+    resizer.removeEventListener('pointerdown', onResizeDown);
+    root.removeEventListener('click', onHideClick);
     win.removeEventListener('pointermove', onPointerMove);
     win.removeEventListener('pointerup', onPointerUp);
   };
-}
-
-/** 悬浮层当前是否可见 */
-export function isOverlayVisible(doc) {
-  const root = doc.getElementById(OVERLAY_ID);
-  return !!root && root.style.display !== 'none';
 }

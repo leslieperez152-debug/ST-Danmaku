@@ -103,16 +103,18 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
     ensureOverlay(doc);
     applyOverlayStyle(doc, state.settings.appearance);
+    // 先给一个默认矩形，避免用户还没拖过时层是 0×0 而看不见
     applyRect(doc, state.settings.appearance.overlayRect);
     showOverlay(doc, state.settings.appearance.overlayEnabled);
     state.offOverlay = enableInteractions(doc, (rect) => {
       if (rect === null) {
+        // 用户点了 ✕：把开关也一起关掉，避免界面与设置不一致
         state.settings.appearance.overlayEnabled = false;
       } else if (rect) {
         state.settings.appearance.overlayRect = rect;
       }
       persistSettings();
-      api.emit('settings');
+      api.emit('settings', state.settings);
     });
 
     bindEvents();
@@ -184,7 +186,12 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
   /** 从最近正文里裁出给弹幕看的"正在直播的内容" */
   function collectStory() {
-    const msgs = getRecentStory(state.settings.contextRounds > 0 ? 12 : 0);
+    const take = state.settings.contextRounds > 0 ? 12 : 0;
+    let msgs = getRecentStory(take);
+    // 开场白只是卡的自我介绍，谈不上"正在发生什么"：默认把它排除在剧情来源外
+    if (state.settings.skipOpening && msgs.some((m) => m.id === 0)) {
+      msgs = msgs.filter((m) => m.id !== 0);
+    }
     return buildStoryContext(msgs, {
       rounds: state.settings.contextRounds,
       charBudget: state.settings.contextCharBudget,
@@ -323,13 +330,25 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
   /* ───────────── 渲染 ───────────── */
 
+  /**
+   * 判断某一楼是不是"开场白"。
+   * 开场白（0 楼）是卡的自我介绍，那时还没有任何剧情，
+   * 观众没什么可说的 —— 所以默认不给它挂弹幕，也不拿它当弹幕的剧情来源。
+   */
+  function isOpeningMessage(messageId) {
+    return Number(messageId) === 0;
+  }
+
   /** 把一批弹幕渲染到楼层框（以及可选的悬浮层） */
   function renderBatch(batch, { messageId, animate = true } = {}) {
     const s = state.settings;
     const app = s.appearance;
     const mid = messageId ?? batch.anchorId;
 
-    if (app.frameEnabled) {
+    // 楼层框：开场白不挂（可选），或者拿不到有效楼层时干脆不挂（悬浮层照常放）
+    const canMountFrame = Number.isFinite(Number(mid)) && Number(mid) >= 0 && !(s.skipOpening && isOpeningMessage(mid));
+
+    if (app.frameEnabled && canMountFrame) {
       // 同一楼已有框就先停掉旧的
       const old = state.frames.get(mid);
       if (old) stopFrame(old);
@@ -425,6 +444,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     if (!state.initialized) return;
     if (!state.settings.enabled || !state.settings.autoGenerate) return;
     if (state.busy) return;
+    // 开场白不触发：这时还没有剧情
+    if (Number(messageId) === 0) return;
 
     state.runtime.roundNo += 1;
     persistRuntime();
@@ -593,6 +614,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     scan,
     buildViewers,
     runBatch,
+    onAssistantMessage,
     replayBatch,
     renderBatch,
     refreshInjection,

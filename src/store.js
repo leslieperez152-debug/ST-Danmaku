@@ -40,6 +40,7 @@ export function defaultSettings() {
     contextRounds: 2, // 出弹幕前读最近几轮正文（0 = 不读，纯世界观）
     contextCharBudget: 6000, // 送进弹幕 API 的正文总字数上限
     historyKeep: 10, // 弹幕历史保留轮数（内存）
+    skipOpening: true, // 开场白（0 楼）不出弹幕：那时还没剧情，观众没什么可说的
 
     /* 世界书扫描 */
     scan: {
@@ -95,8 +96,8 @@ export function defaultSettings() {
       opacity: 1,
       showMeta: true, // 显示轨道序号（楼层号）
       keepStatic: true, // 播完后留下一份静态列表，方便回看
-      overlayEnabled: false,
-      overlayRect: { x: 0.06, y: 0.08, w: 0.88, h: 0.2 }, // 相对视口，拖动/缩放后记忆
+      overlayEnabled: true, // 悬浮层默认开：它浮在上面，不占正文版面
+      overlayRect: { x: 0.06, y: 0.08, w: 0.88, h: 0.18 }, // 相对视口，拖动/缩放后记忆
       overlayOpacity: 0.14, // 悬浮层整体不透明度（要能透出下面的正文）
       overlayFade: true, // 每批播完自动淡出
     },
@@ -188,6 +189,7 @@ export function normalizeSettings(s) {
   out.contextRounds = num(out.contextRounds, 2, 0, 20);
   out.contextCharBudget = num(out.contextCharBudget, 6000, 0, 200000);
   out.historyKeep = num(out.historyKeep, 10, 1, 200);
+  out.skipOpening = asBool(out.skipOpening, true);
 
   out.scan.entryCharBudget = num(out.scan.entryCharBudget, 40000, 0, 2000000);
   out.scan.summaryCharBudget = num(out.scan.summaryCharBudget, 1200, 100, 20000);
@@ -225,7 +227,7 @@ export function normalizeSettings(s) {
   out.appearance.opacity = clamp01(out.appearance.opacity, 1);
   out.appearance.overlayOpacity = clamp01(out.appearance.overlayOpacity, 0.14);
   out.appearance.frameEnabled = asBool(out.appearance.frameEnabled, true);
-  out.appearance.overlayEnabled = asBool(out.appearance.overlayEnabled, false);
+  out.appearance.overlayEnabled = asBool(out.appearance.overlayEnabled, true);
   out.appearance.showMeta = asBool(out.appearance.showMeta, true);
   out.appearance.keepStatic = asBool(out.appearance.keepStatic, true);
   out.appearance.overlayFade = asBool(out.appearance.overlayFade, true);

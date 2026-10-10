@@ -249,6 +249,10 @@ function pages(app) {
           row2('读最近几轮正文', number('contextRounds', s.contextRounds, 0, 20, 1), '0 = 不读正文，只按世界观出弹幕'),
           row2('正文总字数上限', number('contextCharBudget', s.contextCharBudget, 0, 200000, 500)),
           row2('历史保留轮数', number('historyKeep', s.historyKeep, 1, 200, 1), '记录页里能看到这些批次'),
+          row2(
+            '开场白不出弹幕',
+            toggle('skipOpening', s.skipOpening, '推荐开着：开场白还没有剧情，观众没什么可说的，也不该被当成弹幕的剧情来源'),
+          ),
           sep(),
           '<div class="std-sec">直播模式注入（只有直播模式开着才生效）</div>',
           row2('注入深度', number('injection.depth', s.injection.depth, 0, 100, 1)),

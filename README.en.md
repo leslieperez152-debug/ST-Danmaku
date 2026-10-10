@@ -19,9 +19,10 @@ danmaku →  story      off by default. Your main prompt gains exactly zero toke
 
 | Piece | What it does |
 |---|---|
+| **Tavern Extensions panel row** | A "弹幕直播间" row in the tavern's Extensions panel: master switch, batch size, scan, generate-now and a status summary — no need to hunt for the floating ball |
 | **In-chat danmaku frame** | A "screen" under each story message; danmaku fly right-to-left, then optionally stay as a static list you can scroll back through |
-| **Floating danmaku layer** | Floats above the UI. Draggable, resizable from the bottom-right corner, position is remembered. Mouse-transparent when you're not hovering it |
-| **Floating ball** | A small 「弹」 ball in the corner; opens a 7-page settings panel, also draggable |
+| **Floating danmaku layer** | Floats above the UI. Draggable, resizable from the bottom-right corner, position is remembered. Only the title bar and the resize handle take mouse events, so the screen itself never blocks your clicks |
+| **Floating ball** | A small 「弹」 ball in the corner; opens the full 7-page settings panel, also draggable |
 
 Colours aren't naive randomness: the extension samples the **actual luminance of your page background**,
 then picks only from high-saturation / high-lightness colours and filters them through the WCAG contrast
@@ -120,11 +121,14 @@ Refresh the page. To uninstall, delete the folder.
 
 ## Quick start
 
-1. Open the panel (the 「弹」 ball) → **连接 / Connection** → "Test connection"
-2. **世界书 / World book** → "Scan world books" (one API call; builds the viewer profile)
-3. **观众 / Audience** → "Generate viewer roster" (optional but recommended — recurring viewers are what makes it feel live)
+1. Open the tavern's **Extensions panel** and find the 「弹幕直播间」 row (or click the 「弹」 ball)
+2. Click "Scan world books" (one API call; builds the viewer profile)
+3. Optional but recommended: **Audience** page → "Generate viewer roster" — recurring viewers are what makes it feel live
 4. Just chat. A batch of danmaku appears after every story round
-5. Want characters to notice the stream? Turn on **Live mode** on the Overview page
+5. Want characters to notice the stream? Turn on **Live mode**
+
+> The opening message (message 0) gets no danmaku by default: nothing has happened yet, so the audience
+> has nothing to react to. You can lift that restriction on the **Style** page.
 
 ---
 
@@ -161,7 +165,7 @@ On a CORS error, switch to route A.
 | **World book** | Book selection, the three budgets, scan button, real stats, hand-editable profile |
 | **Audience** | Pool size, viewers per batch, fourth-wall slider, the roster (stance, catchphrase, appearance count) |
 | **Appearance** | Frame on/off, background, height, font size, speed, gap, opacity; overlay on/off, opacity, fade, reset position |
-| **Style** | Story rounds to read, story budget, history depth, injection depth/cap, debug logging |
+| **Style** | Story rounds to read, story budget, history depth, whether the opening message gets danmaku, injection depth/cap, debug logging |
 | **History** | The last N batches, replayable one by one |
 
 ---
@@ -172,7 +176,7 @@ Zero dependencies, zero build step. Edit and refresh. Self-checks need Node ≥ 
 
 ```bash
 npm run check   # syntax check every file
-npm test        # 67 self-checks
+npm test        # 85 self-checks
 npm run verify  # both
 ```
 

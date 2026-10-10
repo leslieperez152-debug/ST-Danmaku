@@ -2,23 +2,28 @@
  * index.js — 扩展入口
  *
  * 酒馆加载扩展时会执行这个文件（manifest.json 里的 "js": "index.js"）。
- * 这里只做三件事：等酒馆就绪 → 建 app → 建面板。
+ * 这里做四件事：等酒馆就绪 → 建 app → 建悬浮球面板 → 把设置栏挂进扩展面板。
  * 真正的逻辑都在 src/ 下，方便单独测试。
  */
 
 import { createApp } from './src/main.js';
 import { createPanel } from './src/panel.js';
+import { createDrawer } from './src/drawer.js';
 import { toast } from './src/st.js';
 
 const GLOBAL_KEY = '__ST_DANMAKU__';
 
 function boot() {
+  // 热重载 / 重复加载：先把旧实例清掉，避免两个悬浮球抢事件
   if (globalThis[GLOBAL_KEY]) {
-    // 热重载 / 重复加载：先清掉旧的，避免两个实例抢同一个悬浮球
     try {
       globalThis[GLOBAL_KEY].destroy?.();
-      globalThis[GLOBAL_KEY].panel?.el?.remove();
+    } catch {
+      /* noop */
+    }
+    try {
       globalThis.document?.getElementById('std-ball')?.remove();
+      globalThis.document?.getElementById('std-panel')?.remove();
     } catch {
       /* noop */
     }
@@ -26,24 +31,40 @@ function boot() {
 
   const app = createApp();
   app.init();
+
   const panel = createPanel(app);
   panel.build();
-  globalThis[GLOBAL_KEY] = { app, panel, destroy: () => app.destroy() };
 
-  // 插件状态挂到酒馆的扩展设置上，方便别处查（可选的便利，不影响功能）
-  try {
-    if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-      const ctx = SillyTavern.getContext();
-      if (ctx?.extensionSettings) {
-        ctx.extensionSettings.st_danmaku = ctx.extensionSettings.st_danmaku || { version: '0.1.0' };
-      }
+  // 扩展面板里的设置栏（酒馆「扩展」区域那一栏）
+  const drawer = createDrawer(app);
+  drawer.mount();
+  // 挂载点可能比扩展加载得晚，稍后补挂几次
+  let tries = 0;
+  const retry = setInterval(() => {
+    tries += 1;
+    if (drawer.el || tries > 20) {
+      clearInterval(retry);
+      return;
     }
-  } catch {
-    /* noop */
-  }
+    drawer.mount();
+  }, 500);
+
+  // 悬浮球面板订阅"从别处打开完整设置"的请求
+  app.on('open-panel', () => panel.toggle(true));
+
+  globalThis[GLOBAL_KEY] = {
+    app,
+    panel,
+    drawer,
+    destroy: () => {
+      clearInterval(retry);
+      drawer.unmount();
+      app.destroy();
+    },
+  };
 
   if (app.state.settings.debug) {
-    toast('弹幕直播间已加载：右下角"弹"字球打开设置', 'info');
+    toast('弹幕直播间已加载：扩展面板里的「弹幕直播间」栏，或右下角「弹」字球', 'info');
   }
   return app;
 }
@@ -67,25 +88,23 @@ function waitForTavern(timeoutMs = 15000) {
   });
 }
 
-(async () => {
-  try {
-    const ok = await waitForTavern();
-    if (!ok) {
-      // 酒馆还没就绪：不报错，等 DOM 好了再试一次
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', boot, { once: true });
-      } else {
-        boot();
-      }
-      return;
-    }
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot, { once: true });
-    } else {
+function start() {
+  const run = () => {
+    try {
       boot();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[弹幕直播间] 启动失败', e);
     }
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error('[弹幕直播间] 启动失败', e);
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', run, { once: true });
+  } else {
+    run();
   }
+}
+
+(async () => {
+  await waitForTavern();
+  start();
 })();

@@ -148,6 +148,9 @@ const llm = await mod('llm.js');
 const st = await mod('st.js');
 const scan = await mod('scan.js');
 const danmaku = await mod('danmaku.js');
+// main.js 要在渲染相关的用例之前就位（下面第 11 节起会用）
+const mainMod = await mod('main.js');
+const drawerMod = await mod('drawer.js');
 
 /* ───────────── 1. 设置与持久化 ───────────── */
 
@@ -651,6 +654,32 @@ const frameMod = await mod('frame.js');
 const overlayMod = await mod('overlay.js');
 const appearance = store.defaultSettings().appearance;
 
+/* 每个 test 用独立的迷你文档，避免互相污染 */
+function doc2() {
+  const d = createMiniDocument();
+  globalThis.document = d;
+  globalThis.window = d.defaultView;
+  globalThis.localStorage = d.defaultView.localStorage;
+  // 上一批用例可能留下悬浮层节点（替身会跨文档按 id 兜底查找），先清掉
+  const stale = d.getElementById('std-overlay');
+  if (stale) stale.remove();
+  return d;
+}
+
+/** 切回全局文档（部分用例会新建文档，用完要还回去） */
+function useDoc(d) {
+  globalThis.document = d;
+  globalThis.window = d.defaultView;
+  globalThis.localStorage = d.defaultView.localStorage;
+  return d;
+}
+function doc2create(d, tag) {
+  return d.createElement(tag);
+}
+function doc2overlay() {
+  return overlayMod;
+}
+
 await test('弹幕框：条数、颜色、轨道都正确', () => {
   const items = Array.from({ length: 15 }, (_, i) => ({ 昵称: `观众${i}`, 内容: `弹幕${i}`, 类型: '普通' }));
   const frame = frameMod.createFrame({ doc, appearance, luminance: 0.1, meta: { batchNo: 1, messageId: 3, title: '测试' }, items });
@@ -692,6 +721,227 @@ await test('挂载到指定楼层，并且同楼层只留一块', () => {
   frameMod.mountFrame({ doc, messageId: 99, host: { mode: 'after', node: host }, frame: mk() });
   frameMod.mountFrame({ doc, messageId: 99, host: { mode: 'after', node: host }, frame: mk() });
   eq(doc.querySelectorAll('.std-frame[data-mesid="99"]').length, 1, '同楼层不该叠两块');
+});
+
+await test('弹幕框挂在整条消息之后，不会挤压正文（矩形不重叠）', () => {
+  // 造一条像酒馆那样的消息结构：.mes > .mes_block > .mes_text
+  const chat = doc._chat;
+  doc.body.appendChild(chat);
+  const mes = doc.createElement('div');
+  mes.className = 'mes';
+  mes.setAttribute('mesid', '7');
+  mes._rect = { left: 0, top: 120, width: 620, height: 260, right: 620, bottom: 380 };
+  const block = doc.createElement('div');
+  block.className = 'mes_block';
+  const text = doc.createElement('div');
+  text.className = 'mes_text';
+  block.appendChild(text);
+  mes.appendChild(block);
+  chat.appendChild(mes);
+
+  const anchor = frameMod.resolveHostAnchor(7, doc);
+  eq(anchor.mode, 'after');
+  eq(anchor.node, mes, '锚点必须是整条消息元素，而不是消息内部的块');
+
+  const frame = frameMod.createFrame({ doc, appearance, luminance: 0.1, meta: { batchNo: 5, messageId: 7 }, items: [{ 昵称: '甲', 内容: 'x' }] });
+  frameMod.mountFrame({ doc, messageId: 7, frame });
+
+  eq(frame.el.parentElement, chat, '弹幕框应当是聊天区的直接子节点，不属于这条消息');
+  ok(!mes.children.includes(frame.el), '绝不能插进消息内部');
+
+  // 位置：从消息底部往下，横向与消息对齐
+  const r = frame.el.getBoundingClientRect();
+  eq(r.top, mes._rect.bottom, '弹幕框应当从消息底部开始');
+  eq(r.right, mes._rect.right, '宽度应当与消息一致');
+  const overlapsVertically = !(r.top >= mes._rect.bottom || r.bottom <= mes._rect.top);
+  eq(overlapsVertically, false, '弹幕框不该和消息矩形纵向重叠');
+
+  // 消息自身结构没有被塞进额外节点，正文高度也不会被改动
+  eq(mes.children.length, 1, '消息结构没被塞进额外节点');
+  eq(block.children.length, 1);
+  eq(mes._rect.height, 260, '正文高度不该被弹幕框改变');
+});
+
+await test('开场白（0 楼）不挂弹幕框', () => {
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  app.updateSettings({ seedDemo: true, skipOpening: true, appearance: { frameEnabled: true } });
+  const before = doc.querySelectorAll('.std-frame[data-mesid="0"]').length;
+  app.renderBatch(
+    { batchNo: 900, anchorId: 0, title: '测试', items: [{ 昵称: '甲', 内容: 'x', color: '#fff' }] },
+    { messageId: 0, animate: false },
+  );
+  eq(doc.querySelectorAll('.std-frame[data-mesid="0"]').length, before, '0 楼不该出现新的弹幕框');
+  app.destroy();
+});
+
+await test('关掉"开场白不出弹幕"后，0 楼也能挂', () => {
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  app.updateSettings({ seedDemo: true, skipOpening: false, appearance: { frameEnabled: true } });
+  app.renderBatch(
+    { batchNo: 901, anchorId: 0, title: '测试', items: [{ 昵称: '甲', 内容: 'x', color: '#fff' }] },
+    { messageId: 0, animate: false },
+  );
+  eq(doc.querySelectorAll('.std-frame[data-mesid="0"]').length, 1, '关掉限制后应当能挂上');
+  app.destroy();
+});
+
+await test('开场白不触发自动直出', async () => {
+  const s = makeMemoryStorage();
+  const app = mainMod.createApp({ storage: s, doc, win: doc.defaultView });
+  app.init();
+  app.updateSettings({ seedDemo: true, autoGenerate: true, everyNRounds: 1 });
+  const before = app.state.runtime.history.length;
+  app.onAssistantMessage(0);
+  // 合成事件是异步的，给它一点时间
+  await new Promise((r) => setTimeout(r, 50));
+  eq(app.state.runtime.history.length, before, '0 楼不该触发出批次');
+  eq(app.state.runtime.roundNo, 0, '0 楼也不该计入轮次');
+  app.destroy();
+});
+
+/* ───────────── 11b. 悬浮层交互（拖动 / 缩放） ───────────── */
+
+section('11b. 悬浮层拖动与缩放');
+
+await test('拖动标题栏能移动悬浮层，并回写位置', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  ov.applyRect(d2, { x: 0.1, y: 0.1, w: 0.5, h: 0.2 });
+  const root = d2.getElementById('std-overlay');
+  const bar = root.querySelector('.std-ov-bar');
+  root._rect = { left: 128, top: 80, width: 640, height: 160, right: 768, bottom: 240 };
+
+  let committed = null;
+  ov.enableInteractions(d2, (r) => {
+    committed = r;
+  });
+
+  bar.dispatch('pointerdown', { clientX: 200, clientY: 90, button: 0 });
+  d2.defaultView.__emit('pointermove', { clientX: 300, clientY: 190 });
+  d2.defaultView.__emit('pointerup', {});
+
+  eq(root.style.left, '228px', `左移量不对：${root.style.left}（期望 128+100）`);
+  eq(root.style.top, '180px', `上移量不对：${root.style.top}（期望 80+100）`);
+  ok(committed, '结束拖动后应当回写位置');
+  eq(typeof committed.x, 'number');
+});
+
+await test('标题栏上的 ✕ 不会被当成拖动起点', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  ov.applyRect(d2, { x: 0.1, y: 0.1, w: 0.5, h: 0.2 });
+  const root = d2.getElementById('std-overlay');
+  const hideBtn = doc2create(d2, 'button');
+  hideBtn.setAttribute('data-std-ov-hide', '1');
+  root.querySelector('.std-ov-bar').appendChild(hideBtn);
+  root._rect = { left: 128, top: 80, width: 640, height: 160, right: 768, bottom: 240 };
+
+  ov.enableInteractions(d2, () => {});
+  hideBtn.dispatch('pointerdown', { clientX: 200, clientY: 90, button: 0 });
+  d2.defaultView.__emit('pointermove', { clientX: 400, clientY: 190 });
+  eq(root.style.left, '128px', '点 ✕ 不该把层拖走');
+  eq(root.style.top, '80px');
+});
+
+await test('拖动右下角手柄能改变尺寸（有最小尺寸保护）', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  ov.applyRect(d2, { x: 0.1, y: 0.1, w: 0.5, h: 0.2 });
+  const root = d2.getElementById('std-overlay');
+  const resizer = root.querySelector('.std-ov-resize');
+  root._rect = { left: 100, top: 60, width: 640, height: 160, right: 740, bottom: 220 };
+
+  ov.enableInteractions(d2, () => {});
+  resizer.dispatch('pointerdown', { clientX: 740, clientY: 220, button: 0 });
+  d2.defaultView.__emit('pointermove', { clientX: 840, clientY: 320 });
+  d2.defaultView.__emit('pointerup', {});
+  eq(root.style.width, '740px', `宽度不对：${root.style.width}`);
+  eq(root.style.height, '260px', `高度不对：${root.style.height}`);
+
+  // 往回拖到极小，应当被最小尺寸挡住
+  resizer.dispatch('pointerdown', { clientX: 840, clientY: 320, button: 0 });
+  d2.defaultView.__emit('pointermove', { clientX: 0, clientY: 0 });
+  d2.defaultView.__emit('pointerup', {});
+  eq(root.style.width, '240px', '最小宽度保护失效');
+  eq(root.style.height, '80px', '最小高度保护失效');
+});
+
+await test('检测不到拖动时不会误回写位置', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+  root._rect = { left: 20, top: 20, width: 400, height: 100, right: 420, bottom: 120 };
+  let calls = 0;
+  ov.enableInteractions(d2, () => {
+    calls++;
+  });
+  d2.defaultView.__emit('pointerup', {});
+  eq(calls, 0, '没拖动就不该回写');
+});
+
+await test('点 ✕ 会把悬浮层隐藏并通知外部关掉开关', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  ov.applyRect(d2, { x: 0.1, y: 0.1, w: 0.5, h: 0.2 });
+  const root = d2.getElementById('std-overlay');
+  const hideBtn = doc2create(d2, 'button');
+  hideBtn.setAttribute('data-std-ov-hide', '1');
+  root.querySelector('.std-ov-bar').appendChild(hideBtn);
+
+  let got = 'none';
+  ov.enableInteractions(d2, (r) => {
+    got = r;
+  });
+  ok(ov.isOverlayVisible(d2), '默认应当是可见的');
+  // click 事件里 target.closest 要能命中考号
+  root.dispatch('click', { target: hideBtn });
+  eq(got, null, '应当以 null 通知"用户主动隐藏"');
+  eq(ov.isOverlayVisible(d2), false, '隐藏后 data-std-hidden 应当为 1');
+});
+
+await test('卸载交互后再拖动不会生效', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  ov.applyRect(d2, { x: 0.1, y: 0.1, w: 0.5, h: 0.2 });
+  const root = d2.getElementById('std-overlay');
+  const bar = root.querySelector('.std-ov-bar');
+  root._rect = { left: 100, top: 100, width: 640, height: 160, right: 740, bottom: 260 };
+  const off = ov.enableInteractions(d2, () => {});
+  off();
+  bar.dispatch('pointerdown', { clientX: 120, clientY: 110, button: 0 });
+  d2.defaultView.__emit('pointermove', { clientX: 300, clientY: 300 });
+  eq(root.style.left, '128px', '卸载后不该还能拖动');
+});
+
+/* ───────────── 11c. 示例弹幕用通用网名 ───────────── */
+
+section('11c. 示例弹幕（本地预览用）');
+
+await test('示例昵称是网名，且不预设任何题材', () => {
+  const items = frameMod.demoSample(15);
+  eq(items.length, 15);
+  const names = [...new Set(items.map((d) => d.昵称))];
+  ok(names.length >= 8, `昵称样本太少：${names.length}`);
+  for (const n of names) {
+    ok(n.length >= 2 && n.length <= 14, `昵称长度不像网名：${n}`);
+    ok(!/[\u3040-\u30FF]/.test(n), `不该有日文假名：${n}`);
+  }
+  const joined = items.map((d) => d.昵称 + d.内容).join('');
+  for (const banned of ['掌门', '修士', '仙', '宗门', '师兄', '帮主', '魔法', '皇帝', '将军']) {
+    ok(!joined.includes(banned), `示例里不该出现题材化称呼：${banned}`);
+  }
+  // 网名感：至少有几个带数字或长网名风格的
+  ok(names.some((n) => /\d/.test(n) || n.length >= 6), `网名感不足：${names.join('、')}`);
 });
 
 await test('悬浮层：创建、定位、播放、清理', () => {
@@ -736,8 +986,6 @@ await test('截图式检查：请求体里没有酒馆的预设提示词字段',
 
 section('13. 直播模式注入（唯一的 弹幕 → 正文 通道）');
 
-const mainMod = await mod('main.js');
-
 await test('直播模式关：注入文本为空', () => {
   const app = mainMod.createApp({ storage: makeMemoryStorage(), doc, win: doc.defaultView });
   app.init();
@@ -769,6 +1017,125 @@ await test('注入字数调小后，注入立刻变短', () => {
   app.updateSettings({ liveMode: true, injection: { maxChars: 80 } });
   const text = app.buildInjectionText();
   ok(text.length <= 80, `实际 ${text.length}`);
+  app.destroy();
+});
+
+/* ───────────── 13b. 扩展面板里的设置栏 ───────────── */
+
+section('13b. 扩展面板设置栏（抽屉）');
+
+function makeDrawerEnv() {
+  const d = createMiniDocument();
+  useDoc(d); // 必须让 app 通过全局拿到同一份文档，否则 app.stats() 会读错文档
+  // 清掉上一个用例留下的悬浮层，避免替身跨文档兜底查找时拿错
+  const stale = d.getElementById('std-overlay');
+  if (stale) stale.remove();
+
+  // 模拟酒馆的扩展面板挂载点
+  const slot = d.createElement('div');
+  slot.setAttribute('id', 'extensions_settings2');
+  d.body.appendChild(slot);
+
+  const app = mainMod.createApp({ storage: d.defaultView.localStorage, doc: d, win: d.defaultView });
+  app.init();
+  return { d, slot, app };
+}
+
+await test('设置栏能挂进酒馆扩展面板的挂载点', () => {
+  const { d, slot, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  ok(el, '应当挂载成功');
+  eq(el.id, 'std-drawer');
+  eq(el.parentElement, slot, '必须挂在 #extensions_settings2 里');
+  ok(/弹幕直播间/.test(el.textContent), '标题应当出现');
+  ok(el.querySelector('.inline-drawer'), '应当用酒馆的 inline-drawer 结构，样式才能跟着主题走');
+  app.destroy();
+});
+
+await test('找不到挂载点时返回 null，而不是抛错', () => {
+  const d = createMiniDocument();
+  globalThis.document = d;
+  globalThis.window = d.defaultView;
+  globalThis.localStorage = d.defaultView.localStorage;
+  const app = mainMod.createApp({ storage: d.defaultView.localStorage, doc: d, win: d.defaultView });
+  app.init();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  eq(drawer.mount(), null, '没有 #extensions_settings2 时应当安静返回 null');
+  app.destroy();
+});
+
+await test('设置栏反映当前设置，并且是双向的', () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+
+  app.updateSettings({ enabled: true, liveMode: false, autoGenerate: true, count: 15, everyNRounds: 2 });
+  drawer.render();
+  const get = (p) => el.querySelector(`[data-std-dw="${p}"]`);
+  eq(get('enabled').checked, true);
+  eq(get('liveMode').checked, false);
+  eq(get('autoGenerate').checked, true);
+  eq(get('count').value, '15');
+  eq(get('everyNRounds').value, '2');
+
+  // 从 UI 改一次，应当写回设置
+  get('liveMode').checked = true;
+  el.dispatch('change', { target: get('liveMode') });
+  eq(app.state.settings.liveMode, true, 'UI 改动应当写回设置');
+
+  get('count').value = '30';
+  el.dispatch('change', { target: get('count') });
+  eq(app.state.settings.count, 30);
+
+  app.destroy();
+});
+
+await test('状态区显示卡名 / 世界书 / 档案状态', () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  drawer.render();
+  const status = el.querySelector('[data-std-dw-status]').innerHTML;
+  ok(status.includes('当前卡'), status);
+  ok(status.includes('世界书'), status);
+  ok(status.includes('还没扫描'), `未扫描时应当提示去扫描：${status}`);
+  app.destroy();
+});
+
+await test('「打开完整设置」会通知外部打开悬浮球面板', () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  let opened = false;
+  app.on('open-panel', () => {
+    opened = true;
+  });
+  const btn = el.querySelector('[data-std-dw-act="open"]');
+  el.dispatch('click', { target: btn });
+  eq(opened, true, '应当发出 open-panel 事件');
+  app.destroy();
+});
+
+await test('「出一批」按钮能在设置栏里直接出弹幕', async () => {
+  const { d, app } = makeDrawerEnv();
+  app.updateSettings({ seedDemo: true, count: 4 });
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  const btn = el.querySelector('[data-std-dw-act="batch"]');
+  el.dispatch('click', { target: btn });
+  await new Promise((r) => setTimeout(r, 60));
+  eq(app.state.runtime.history.length, 1, '设置栏里的按钮应当真的出了一批');
+  ok(/已出 4 条/.test(el.querySelector('[data-std-dw-result]').textContent), el.querySelector('[data-std-dw-result]').textContent);
+  app.destroy();
+});
+
+await test('卸载设置栏后不会再响应事件', () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  drawer.unmount();
+  eq(d.getElementById('std-drawer'), null, '卸载后 DOM 应当清掉');
   app.destroy();
 });
 

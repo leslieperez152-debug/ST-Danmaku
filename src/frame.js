@@ -14,21 +14,19 @@ const LANE_PAD = 6;
 
 /**
  * 确定弹幕容器该插在哪。
- * 酒馆的消息结构各版本略有差别，所以从实体消息元素开始向上找一个能容纳整块的地方，
- * 找不到就退回到 #chat 末尾（不会把消息结构搞坏）。
+ *
+ * 关键：**必须插在整条消息元素（.mes）之后**，不能插进消息内部。
+ * 插进消息内部（比如 .mes_block 之后）会破坏酒馆消息容器的布局计算，
+ * 表现为"弹幕框把正文挤掉/撑开"。
  */
 export function resolveHostAnchor(messageId, doc) {
   try {
-    const direct = doc.querySelector(`.mes[mesid="${messageId}"]`);
-    if (direct) {
-      // 优先塞进消息内容之后；没有内容容器就塞在消息元素之后
-      const inner = direct.querySelector('.mes_block') || direct.querySelector('.mes_text');
-      if (inner && inner.parentElement) return { mode: 'after', node: inner };
-      return { mode: 'after', node: direct };
-    }
+    const mes = doc.querySelector(`.mes[mesid="${messageId}"]`);
+    if (mes && mes.parentElement) return { mode: 'after', node: mes };
   } catch {
     /* noop */
   }
+  // 消息元素找不到（渲染时序问题）时，退到聊天区末尾；不影响消息结构
   const chat = doc.getElementById('chat');
   if (chat) return { mode: 'append', node: chat };
   return null;
@@ -309,12 +307,17 @@ export function mountFrame({ doc, messageId, host, frame }) {
   if (!anchor) return null;
   if (anchor.mode === 'after') {
     anchor.node.insertAdjacentElement('afterend', frame.el);
+    // 测试替身（以及任何没有真实布局引擎的环境）靠这两个知道：
+    // "我插在锚点下方、宽度跟锚点一致"
+    if (anchor.node._rect) {
+      frame.el._hostRect = anchor.node._rect;
+      frame.el._autoWidth = anchor.node._rect.width;
+    }
   } else {
     anchor.node.appendChild(frame.el);
   }
   return frame.el;
 }
-
 /** 清掉所有本次会话插入的弹幕框 */
 export function clearAllFrames(doc) {
   if (!doc) return 0;
@@ -337,17 +340,33 @@ export function countFrames(doc) {
   return doc.querySelectorAll(`.${HOST_CLASS}`).length;
 }
 
-/** 生成一份"演示用"的假弹幕，让用户在没花 API 钱的情况下看到效果 */
+/**
+ * 生成一份"演示用"的假弹幕，让用户在没花 API 钱的情况下看到效果。
+ * 这里用的是**通用网名**（不预设任何题材）：只用来调外观，
+ * 真实弹幕的昵称由 AI 按当前世界观起。
+ */
 export function demoSample(n = 15) {
-  const names = ['前排的', '站岗的路人', '刚下山的', '看热闹的', '路过的小贩', '隔壁家的', '老观众', '蹲前排的'];
+  const names = [
+    '前排吃瓜群众',
+    '咸鱼不翻身',
+    '今天也没睡醒',
+    '路人甲9527',
+    '看戏不嫌事大',
+    '表情包仓库',
+    '三点半起来喝热水',
+    '隔壁老王在线',
+    '键盘侠本侠',
+    '嗑到停不下来',
+    '潜水十年的我',
+    '一个没有感情的观众',
+  ];
   const texts = [
     '来了来了',
     '？？？这什么操作',
     '我就说会这样',
     '前排蹲一个结果',
-    '@隔壁家的 你上次也是这么说的',
+    '这段能截下来吗',
     '别急，还有后手',
-    '这一段能截下来吗',
     '笑死，谁给他的胆子',
     '这段我熟，等着看吧',
     '主播别停啊',
@@ -361,6 +380,7 @@ export function demoSample(n = 15) {
     '这也能行？',
     '我赌五毛他要栽',
     '安静看戏',
+    '好家伙，直接开摆',
   ];
   const types = ['普通', '懂行', '起哄', '催促', '抬杠', '玩梗', '情绪'];
   const out = [];

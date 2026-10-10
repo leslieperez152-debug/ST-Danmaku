@@ -179,24 +179,33 @@
   box-sizing: border-box;
   border-radius: 10px;
   overflow: hidden;
-  /* 平时鼠标穿透：不挡聊天滚动和点击 */
+  /* 整个层默认穿透：永远不吃聊天区的事件 */
   pointer-events: none;
   opacity: var(--std-ov-opacity, 0.14);
-  transition: opacity 0.5s ease;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.04));
-  outline: 1px dashed rgba(255, 255, 255, 0.0);
+  transition: opacity 0.4s ease;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.03));
+  outline: 1px dashed rgba(255, 255, 255, 0);
 }
 
-#std-overlay:hover {
+#std-overlay[data-std-hidden='1'] {
+  display: none;
+}
+
+/* 只有这两个部位收事件 —— 所以拖动和拉伸永远有效，不依赖 hover */
+#std-overlay .std-ov-bar,
+#std-overlay .std-ov-resize {
   pointer-events: auto;
+}
+
+/* hover 或拖动时整体浮现出来，方便看清在哪 */
+#std-overlay:has(.std-ov-bar:hover),
+#std-overlay.dragging {
   opacity: 1;
-  outline-color: rgba(140, 180, 255, 0.45);
+  outline-color: rgba(140, 180, 255, 0.55);
 }
 
 #std-overlay.dragging {
-  pointer-events: auto;
-  opacity: 1;
-  outline-color: rgba(140, 180, 255, 0.8);
+  outline-color: rgba(140, 180, 255, 0.9);
 }
 
 #std-overlay.faded {
@@ -211,9 +220,10 @@
   padding: 0 8px;
   font-size: 11px;
   color: rgba(255, 255, 255, 0.75);
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.42);
   cursor: grab;
   user-select: none;
+  touch-action: none;
 }
 
 .std-ov-bar:active {
@@ -249,6 +259,8 @@
   top: 22px;
   bottom: 0;
   overflow: hidden;
+  /* 幕布区域始终穿透 */
+  pointer-events: none;
 }
 
 .std-ov-item {
@@ -258,22 +270,23 @@
   font-size: var(--std-ov-fs, 15px);
   line-height: var(--std-ov-lh, 29px);
   font-weight: 600;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.75);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8), 0 0 2px rgba(0, 0, 0, 0.6);
   animation-name: std-fly;
   animation-timing-function: linear;
   animation-fill-mode: forwards;
   will-change: transform;
+  pointer-events: none;
 }
 
 .std-ov-resize {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   cursor: nwse-resize;
-  pointer-events: auto;
-  background: linear-gradient(135deg, transparent 45%, rgba(255, 255, 255, 0.55) 46%, rgba(255, 255, 255, 0.55) 60%, transparent 61%);
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 45%, rgba(255, 255, 255, 0.6) 46%, rgba(255, 255, 255, 0.6) 60%, transparent 61%);
 }
 
 /* ───────────── 悬浮球 ───────────── */
@@ -709,7 +722,102 @@ textarea.std-input {
   background: rgba(255, 255, 255, 0.05);
 }
 
-/* 小屏 */
+/* ───────────── 扩展面板里的设置栏（抽屉） ───────────── */
+
+#std-drawer .std-dw-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#std-drawer .std-dw-head b {
+  flex: none;
+}
+
+.std-dw-badge {
+  flex: 1;
+  font-size: 11.5px;
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.std-dw-badge.live {
+  color: #ff6b6b;
+  opacity: 1;
+  font-weight: 600;
+}
+
+.std-dw-badge.off {
+  opacity: 0.5;
+}
+
+.std-dw-status {
+  font-size: 12px;
+  line-height: 1.7;
+  opacity: 0.85;
+  margin: 2px 0 8px;
+  word-break: break-word;
+}
+
+.std-dw-err {
+  color: #e06c75;
+}
+
+.std-dw-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  margin: 3px 0;
+  cursor: pointer;
+}
+
+.std-dw-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  margin: 6px 0;
+}
+
+.std-dw-num {
+  width: 64px !important;
+  flex: none;
+}
+
+.std-dw-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 6px;
+}
+
+.std-dw-btn {
+  font-size: 12px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.std-dw-result {
+  font-size: 12px;
+  min-height: 17px;
+  margin: 4px 0 2px;
+  opacity: 0.95;
+  word-break: break-word;
+}
+
+.std-dw-tip {
+  font-size: 11.5px;
+  opacity: 0.6;
+  margin-top: 6px;
+  line-height: 1.6;
+}
+
+/* ───────────── 小屏 ───────────── */
+
 @media (max-width: 700px) {
   .std-label,
   .std-kv span {
