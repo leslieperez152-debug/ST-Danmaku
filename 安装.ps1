@@ -4,8 +4,11 @@
 # 用法：右键本文件 →「使用 PowerShell 运行」；或在本文件夹打开 PowerShell 后执行：
 #         powershell -ExecutionPolicy Bypass -File .\安装.ps1
 #
-# 可重复执行：第二次运行就是"更新"，会自动覆盖旧版本（不顺带删你自己的东西）。
+# 可重复执行：第二次运行就是"更新"，会自动覆盖旧版本（旧版会先备份）。
 # 它不碰酒馆的其它目录，只往 extensions\third-party\ 下放一个 ST-Danmaku 文件夹。
+#
+# 本文件保存为 UTF-8 with BOM —— Windows PowerShell 5.1 读无 BOM 的 UTF-8 脚本时
+# 会按本地代码页解码，中文会乱码甚至语法报错。
 
 [CmdletBinding()]
 param(
@@ -18,6 +21,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $PluginName = 'ST-Danmaku'
 $Source = $PSScriptRoot
+
+# 不复制进扩展目录的东西：开发用的仓库元数据、测试、忽略文件
+$ExcludeNames = @('.git', '.github', 'node_modules', '.gitignore', 'test', '_backup_*')
 
 function Write-Step($msg) { Write-Host "  $msg" }
 function Write-Ok($msg)   { Write-Host "  [OK] $msg"   -ForegroundColor Green }
@@ -90,34 +96,32 @@ if ($DryRun) {
 $running = Get-Process -Name 'tauritavern', 'SillyTavern' -ErrorAction SilentlyContinue
 if ($running) {
     Write-Warn2 "检测到酒馆正在运行。复制文件本身没问题，但要刷新页面（Ctrl+R）才会生效。"
-    Write-Warn2 "如果刷新后没出现悬浮球，就完全退出酒馆再启动一次。"
 }
 
-# ── 5. 备份旧版本（如果有） ─────────────────────────────────────
+# ── 5. 备份旧版本（如果有），只保留最近 3 份 ────────────────────
+$parent = Join-Path $found 'extensions\third-party'
 if (Test-Path $target) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $backup = Join-Path $found "extensions\third-party\_backup_${PluginName}_$stamp"
-    Write-Step "发现旧版本，先备份到：_backup_${PluginName}_$stamp"
+    $backup = Join-Path $parent "_backup_${PluginName}_$stamp"
+    Get-ChildItem $parent -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "_backup_${PluginName}_*" } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -Skip 2 |
+        ForEach-Object { Write-Step "清理最旧的备份：$($_.Name)"; Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-Step "备份旧版本到：_backup_${PluginName}_$stamp"
     Copy-Item $target $backup -Recurse -Force
     Write-Ok "备份完成"
 }
 
-# ── 6. 复制 ─────────────────────────────────────────────────────
+# ── 6. 清空目标再复制（避免旧版的残留文件混在里面） ─────────────
+if (Test-Path $target) {
+    Get-ChildItem $target -Force | Remove-Item -Recurse -Force
+}
 New-Item -ItemType Directory -Path $target -Force | Out-Null
-$exclude = @('.git', 'node_modules', 'test', '.github', '.gitignore')
-Get-ChildItem $Source -Force | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
+Get-ChildItem $Source -Force | Where-Object { $ExcludeNames -notcontains $_.Name } | ForEach-Object {
     Copy-Item $_.FullName -Destination $target -Recurse -Force
 }
-Write-Ok "文件已复制"
-
-# 顺手清理旧版本可能留下的多余文件：只保留本次复制进去的（其余的已备份）
-Get-ChildItem $target -Force | Where-Object {
-    $name = $_.Name
-    -not (Test-Path (Join-Path $Source $name))
-} | ForEach-Object {
-    Write-Step "移除旧版本残留：$($_.Name)（备份里还有）"
-    Remove-Item $_.FullName -Recurse -Force
-}
+Write-Ok "文件已复制（已排除 .git / .github / test 等开发文件）"
 
 # ── 7. 结果 ─────────────────────────────────────────────────────
 $ver = (Get-Content (Join-Path $Source 'manifest.json') -Raw | ConvertFrom-Json).version
@@ -125,11 +129,13 @@ Write-Host ""
 Write-Host "=== 安装完成（版本 $ver）===" -ForegroundColor Green
 Write-Host ""
 Write-Host "接下来："
-Write-Host "  1. 打开酒馆，按 Ctrl+R 刷新页面"
-Write-Host "  2. 右下角会出现一个「弹」字小球，点它打开设置"
-Write-Host "  3. 先到【连接】页点「测试连接」，确认能通"
-Write-Host "  4. 再到【世界书】页点「扫描世界书」（这一步会调用一次 API）"
+Write-Host "  1. 打开酒馆，按 Ctrl+R 刷新页面（必须刷新才会加载新版）"
+Write-Host "  2. 展开酒馆【扩展面板】，找到「弹幕直播间」那一栏"
+Write-Host "  3. 在【世界书】模块里勾选要读的世界书（可多选；想全读就点「勾选全部」）"
+Write-Host "  4. 点「扫描世界书」→ 扫完会显示「✅ 已生效」"
 Write-Host "  5. 之后每轮正文生成完就会自动出一批弹幕"
+Write-Host ""
+Write-Host "如果世界书列表是空的：点那一栏里的「诊断」按钮，它会把每条获取途径的结果列出来。" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "想卸载：直接删掉这个文件夹即可：" -ForegroundColor DarkGray
 Write-Host "  $target" -ForegroundColor DarkGray
