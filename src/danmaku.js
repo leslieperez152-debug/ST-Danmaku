@@ -394,6 +394,94 @@ export function parseLinesFallback(text, limit) {
 }
 
 /**
+ * 从**被截断**的 JSON 文本里抢救出完整的对象。
+ *
+ * 为什么需要：模型输出有 token 上限，一批 15 条中文弹幕很容易在最后一条上被切断，
+ * 于是整段 JSON 不合法、一条都用不了。但前面那些对象其实是**完整可用**的。
+ *
+ * 做法：按花括号配平扫描（跳过字符串内的括号与转义），每凑齐一个平衡的 `{...}`
+ * 就尝试解析一次，成功的就收下；遇到配不平的（就是被截断的那条）就停。
+ */
+/**
+ * 从**被截断**的 JSON 文本里抢救出完整的对象。
+ *
+ * 为什么需要：模型输出有 token 上限，一批 15 条中文弹幕很容易在最后一条上被切断，
+ * 于是整段 JSON 不合法、一条都用不了。但前面那些对象其实是**完整可用**的。
+ *
+ * 做法（不依赖固定的嵌套层级）：
+ *   1. 先找 `"弹幕": [ …`（或 `"语料"` 之类）的数组起点；
+ *   2. 从数组起点开始扫描，每凑齐一个**配平**的 `{...}` 就尝试解析一次，成功就收下；
+ *   3. 遇到配不平的（就是被截断的那条）就停 —— 后面的都不可信了。
+ *   字符串内的花括号与转义都会被正确跳过。
+ *
+ * 为什么不用"深度等于几"来判断：顶层对象在深度 1、数组元素在深度 2，
+ * 写死哪一个都会在另一种输入上失效（我第一版就是这么错的）。
+ */
+export function salvageObjects(text) {
+  const s = String(text || '');
+  if (!s) return [];
+
+  // 第一遍：找数组起点。优先找"弹幕"这类键，找不到就退回第一个 '['。
+  let from = -1;
+  for (const key of ['弹幕', '语料', 'danmaku', 'items']) {
+    const k = s.indexOf(`"${key}"`);
+    if (k < 0) continue;
+    const bracket = s.indexOf('[', k);
+    if (bracket >= 0) {
+      from = bracket + 1;
+      break;
+    }
+  }
+  if (from < 0) {
+    const bracket = s.indexOf('[');
+    from = bracket >= 0 ? bracket + 1 : 0;
+  }
+
+  // 第二遍：从数组里捞出配平的对象
+  const out = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = from; i < s.length; i += 1) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      if (depth === 0) continue; // 多余的右括号，忽略
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        const chunk = s.slice(start, i + 1);
+        try {
+          const parsed = JSON.parse(chunk);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) out.push(parsed);
+        } catch {
+          /* 这一段不合法就丢掉 */
+        }
+        start = -1;
+      }
+      continue;
+    }
+    if (ch === ']' && depth === 0) break; // 数组结束
+    // 配平扫描里遇到配不平的 '{' 起头就说明被截断了；其它字符忽略
+  }
+  return out;
+}
+
+/**
  * 生成一批弹幕。
  *
  * @param {object} input
@@ -434,11 +522,26 @@ export async function generateBatch(input) {
 
   let list = pickDanmakuArray(res.value);
   let fallback = false;
+  let truncated = false;
 
   if (!list) {
     // 兜底：模型没按 JSON 回，就按行拆
-    list = parseLinesFallback(res.text, count);
-    fallback = list.length > 0;
+    // 先试**截断抢救**：一批 15 条中文弹幕很容易在最后一条被 token 上限切断，
+    // 整段 JSON 于是不合法，但前面那些对象是完整可用的，不该一起丢掉。
+    const salvaged = salvageObjects(res.text);
+    if (salvaged.length) {
+      list = salvaged;
+      fallback = true;
+      truncated = true;
+      log(
+        `模型输出被截断了（多半是 token 上限），已抢救出前 ${salvaged.length} 条完整弹幕。` +
+          `把「最大输出」调大可以要满整批`,
+        'warn',
+      );
+    } else {
+      list = parseLinesFallback(res.text, count);
+      fallback = list.length > 0;
+    }
     if (!list.length) {
       const head = String(res.text || '').slice(0, 200).replace(/\s+/g, ' ');
       return {
@@ -448,7 +551,7 @@ export async function generateBatch(input) {
         raw: res.text || '',
       };
     }
-    log(`模型没按 JSON 返回，已按行兜底解析出 ${list.length} 条`, 'warn');
+    if (!truncated) log(`模型没按 JSON 返回，已按行兜底解析出 ${list.length} 条`, 'warn');
   }
 
   const items = list

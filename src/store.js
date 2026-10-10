@@ -84,7 +84,7 @@ export function defaultSettings() {
       reverseProxy: '', // 覆盖地址（走酒馆后端时用）
       model: '', // 留空 = 用酒馆当前模型 / 直连必须填
       temperature: 1.05, // 弹幕需要发散，默认比正文高
-      maxTokens: 2000,
+      maxTokens: 4000, // 默认给宽一点：一批 15 条中文弹幕 + 各字段，2000 容易被截断
       // 结构化输出默认关：兼容性远比"成功率"重要。
       // 很多第三方 OpenAI 兼容端点（尤其转 Gemini 的）不支持 response_format，
       // 带了就直接 400「Invalid data: Request contains an invalid argument」，
@@ -248,7 +248,7 @@ export function normalizeSettings(s) {
   if (!['st', 'direct'].includes(out.api.route)) out.api.route = 'st';
   if (!['auto', 'fixed'].includes(out.api.sourceMode)) out.api.sourceMode = 'auto';
   out.api.temperature = num(out.api.temperature, 1.05, 0, 2);
-  out.api.maxTokens = num(out.api.maxTokens, 2000, 64, 32000);
+  out.api.maxTokens = num(out.api.maxTokens, 4000, 64, 32000);
   out.api.timeoutMs = num(out.api.timeoutMs, 120000, 5000, 600000);
   out.api.useJsonSchema = asBool(out.api.useJsonSchema, false);
   out.api.model = String(out.api.model || '');

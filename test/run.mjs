@@ -2990,6 +2990,108 @@ await test('「防重叠」是设置项，且有默认值', () => {
   eq(store.normalizeSettings({ appearance: { avoidOverlap: false } }).appearance.avoidOverlap, false, '关掉要能生效');
 });
 
+/* ───────────── 截断抢救 / 淡出复位 ───────────── */
+
+section('13j. 截断抢救与淡出复位');
+
+await test('截断抢救：从被切断的 JSON 里捞出完整的弹幕', () => {
+  // 真实遇到过的形态：最后一个对象在 token 上限处被切断
+  const truncated =
+    '{"弹幕":[{"昵称":"甲","内容":"他左手在抖","类型":"懂行","回复":""},' +
+    '{"昵称":"乙","内容":"这剑法不对","类型":"抬杠","回复":""},' +
+    '{"昵称":"丙","内容":"第三式怎么慢';
+  const got = danmaku.salvageObjects(truncated);
+  eq(got.length, 2, `应当捞出 2 条完整对象，实际 ${got.length}`);
+  eq(got[0].昵称, '甲');
+  eq(got[1].内容, '这剑法不对');
+});
+
+await test('截断抢救：字符串里的花括号与转义不会把它带偏', () => {
+  const text =
+    '{"弹幕":[' +
+    '{"昵称":"甲","内容":"他说\\"这个{不行}\\"","类型":"普通","回复":""},' +
+    '{"昵称":"乙","内容":"后半段被切';
+  const got = danmaku.salvageObjects(text);
+  eq(got.length, 1, `应当只捞出 1 条，实际 ${got.length}`);
+  eq(got[0].内容, '他说"这个{不行}"', '字符串内的花括号与转义必须原样保留');
+});
+
+await test('截断抢救：完整 JSON 与空输入都不出错', () => {
+  eq(danmaku.salvageObjects('{"a":1}').length, 1);
+  eq(danmaku.salvageObjects('').length, 0);
+  eq(danmaku.salvageObjects('不是 JSON').length, 0);
+});
+
+await test('生成时遇到截断：能出弹幕，并提示调大「最大输出」', async () => {
+  resetMockConnection();
+  const truncated =
+    '{"弹幕":[{"昵称":"甲","内容":"他左手在抖","类型":"懂行","回复":""},' +
+    '{"昵称":"乙","内容":"这剑法不对","类型":"抬杠","回复":""},' +
+    '{"昵称":"丙","内容":"第三式怎么慢';
+  queueResponse({ choices: [{ message: { content: truncated } }] });
+  const logs = [];
+  const res = await danmaku.generateBatch({
+    api: { route: 'st', sourceMode: 'auto', useJsonSchema: false },
+    profile: null,
+    story: '正文',
+    viewers: [],
+    count: 15,
+    log: (m) => logs.push(m),
+  });
+  ok(res.ok, `截断时也应当出弹幕：${res.error}`);
+  eq(res.items.length, 2, `应当抢救出 2 条，实际 ${res.items.length}`);
+  eq(res.fallback, true, '应当标记为兜底');
+  ok(
+    logs.some((m) => /截断|最大输出/.test(m)),
+    `应当提示调大最大输出：${logs.join(' | ')}`,
+  );
+});
+
+await test('showOverlay(true) 会清掉淡出状态（否则"生成后层消失了"）', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+
+  // 模拟被淡出过
+  root.classList.add('faded');
+  ov.showOverlay(d2, false);
+  eq(root.getAttribute('data-std-hidden'), '1', '隐藏应当生效');
+
+  // 再显出来时，淡出状态必须一起清掉
+  ov.showOverlay(d2, true);
+  eq(root.getAttribute('data-std-hidden'), null, '应当可见');
+  ok(!root.classList.contains('faded'), '淡出状态必须被清掉，否则看起来就是"消失了"');
+});
+
+await test('默认的「最大输出」够一批 15 条中文弹幕（不再默认 2000）', () => {
+  const s = store.defaultSettings();
+  ok(s.api.maxTokens >= 4000, `默认应当给宽一点，实际 ${s.api.maxTokens}`);
+  // 归一化也不能把用户没设过的值压回 2000
+  ok(store.normalizeSettings({ api: {} }).api.maxTokens >= 4000, '归一化后也该是宽的那个默认值');
+});
+
+await test('截断抢救：正好切在某个字段的值中间（你实际遇到的那种）', () => {
+  // 复刻用户实际遇到的形态：最后一条切在 "内容":" 后面
+  const text =
+    '{"弹幕":[' +
+    '{"昵称":"海城押注狂徒","内容":"内容","类型":"起哄","回复":""},' +
+    '{"昵称":"港口看戏党","内容":"@海城押注狂徒 内容","类型":"抬杠","回复":"海城押注狂徒"},' +
+    '{"昵称":"专看玉腿","内容":"';
+  const got = danmaku.salvageObjects(text);
+  eq(got.length, 2, `应当捞出前 2 条，实际 ${got.length}`);
+  eq(got[0].昵称, '海城押注狂徒');
+  eq(got[1].昵称, '港口看戏党');
+  ok(!got.some((x) => x.昵称 === '专看玉腿'), '被切断的那条不该混进来');
+});
+
+await test('截断抢救：嵌套数组与多余右括号不会误伤', () => {
+  const text = '{"弹幕":[{"a":[1,2,{"b":3}]}],"其它":1}';
+  const got = danmaku.salvageObjects(text);
+  eq(got.length, 1, `嵌套数组应当被当成一个对象，实际 ${got.length}`);
+  eq(got[0].a.length, 3, '嵌套内容要完整保留');
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

@@ -140,8 +140,15 @@ export function applyOverlayStyle(doc, appearance) {
 export function showOverlay(doc, on = true) {
   const root = doc.getElementById(OVERLAY_ID);
   if (!root) return;
-  if (on) root.removeAttribute('data-std-hidden');
-  else root.setAttribute('data-std-hidden', '1');
+  if (on) {
+    root.removeAttribute('data-std-hidden');
+    // 显出来的时候顺手把"播完淡出"的状态清掉。
+    // 否则一旦被淡出过（opacity 0.03），下一次生成时层虽然"在"、却几乎看不见 ——
+    // 表现就是"框本来好好的，生成之后直接消失了"。
+    root.classList.remove('faded');
+  } else {
+    root.setAttribute('data-std-hidden', '1');
+  }
 }
 
 /** 悬浮层当前是否可见 */
