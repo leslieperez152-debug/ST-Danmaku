@@ -198,12 +198,19 @@ export function playOverlay(doc, items, opts = {}) {
   // 每条用自己的速度（生成时定死），重播保持一致
   const durationFor = (item) => Math.max(4, (width + 340) / speedOfItem(item, baseSpeed));
 
+  /**
+   * 悬浮层的行分配：**均摊**，而不是照搬计划轨道号。
+   *
+   * 为什么要区别对待：悬浮层常常"只有几条弹幕、却能放 6 行"，
+   * 照搬计划轨道号的话几条会全挤在最上面、**底下整片空着**（用户拉高之后尤其明显）。
+   * 均摊能把有限的几条铺满整块高度。
+   */
+  const spread = spreadLanes(items.length, lanes);
+
   items.forEach((item, i) => {
     const node = doc.createElement('div');
     node.className = 'std-ov-item';
-    // 轨道：优先用防重叠算法分配好的（它保证了同轨不挤在一起）。
-    // 这里**不做取模** —— 取模会把不同轨道压回同一轨，那就白防了。
-    const lane = Number.isFinite(Number(item?.轨道)) && Number(item.轨道) >= 0 ? Math.floor(Number(item.轨道)) : i % lanes;
+    const lane = spread[i];
     node.style.top = `${lane * laneH}px`;
     node.style.color = item.color || '#fff';
     const dur = durationFor(item);
@@ -297,6 +304,11 @@ export function playOverlay(doc, items, opts = {}) {
   }
   root.__std.timers.push(timer);
 
+  // 把"这批弹幕 + 行高"记在层上：用户拉伸之后要能按新高度重排（relayoutOverlay）
+  root.__std.items = items;
+  root.__std.laneH = laneH;
+  root.__std.lanes = lanes;
+
   return { duration: maxEnd, totalMs: batchMs, lanes, loop: app.overlayLoop === true };
 }
 
@@ -312,6 +324,56 @@ export function stopOverlay(doc) {
   root.__std.timers = [];
   root.__std.stage.innerHTML = '';
   if (root.__std.count) root.__std.count.textContent = '';
+}
+
+/**
+ * 把 items 摊到 `lanes` 条轨道上。
+ *
+ * 和弹幕框用的 `distributeLanes` 不同：这里**优先均摊**，因为悬浮层常常"只有几条弹幕、
+ * 却能放 6 行"——如果只按计划轨道号，几条弹幕会全挤在最上面，**底下整片空着**。
+ * 用户把层拉高之后尤其明显。
+ *
+ * 所以：
+ *   · 条数 ≤ 轨道数 → 每条各占一行，均匀铺开；
+ *   · 条数 > 轨道数 → 按序轮流，保证同轨的相邻两条尽量不是同一个发送者。
+ */
+export function spreadLanes(count, lanes) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const total = Math.max(1, Math.floor(Number(lanes) || 1));
+  const out = [];
+  if (!n) return out;
+  if (n <= total) {
+    // 均匀取行：6 行放 3 条 → 0, 2, 4（而不是 0, 1, 2 挤在顶上）
+    for (let i = 0; i < n; i += 1) out.push(Math.round((i * (total - 1)) / Math.max(1, n - 1)));
+    return out;
+  }
+  for (let i = 0; i < n; i += 1) out.push(i % total);
+  return out;
+}
+
+/**
+ * 按**当前尺寸**重排已经摆好的弹幕（只改行位置，不重播）。
+ *
+ * 用途：用户把悬浮层拉高/压矮之后，行数变了，弹幕必须跟着重新铺开；
+ * 否则行数还是旧的，弹幕只占上面几行、底下整片空着。
+ * 不重播动画（延时不动），所以不会打断正在飞的弹幕。
+ */
+export function relayoutOverlay(doc) {
+  const root = doc.getElementById(OVERLAY_ID);
+  if (!root || !root.__std) return 0;
+  const { stage, items, laneH } = root.__std;
+  if (!stage || !items || !items.length) return 0;
+  const stageH = stage.clientHeight || root.clientHeight || 160;
+  const lh = Math.max(10, Number(laneH) || 29);
+  const lanes = Math.max(1, Math.floor(stageH / lh));
+  const spread = spreadLanes(items.length, lanes);
+  const nodes = [...stage.children];
+  nodes.forEach((node, i) => {
+    if (spread[i] === undefined) return;
+    node.style.top = `${spread[i] * lh}px`;
+  });
+  root.__std.lanes = lanes;
+  return lanes;
 }
 
 /* ───────────── 拖动 / 缩放 ───────────── */
@@ -385,9 +447,13 @@ export function enableInteractions(doc, onCommitOrOpts) {
     win.removeEventListener('pointermove', onPointerMove);
     win.removeEventListener('pointerup', onPointerUp);
     root.classList.remove('dragging');
+    const mode = drag?.mode;
     const wasDrag = !!drag;
     drag = null;
     if (!wasDrag) return;
+    // 拉伸之后**立刻按新高度重排**：不然行数还是旧的，
+    // 弹幕只占上面几行、底下整片空着（这就是"拉高了还是只有几行"）。
+    if (mode === 'resize') relayoutOverlay(doc);
     const rect = readRect(doc);
     if (rect && typeof onCommit === 'function') onCommit(rect);
   };
@@ -409,6 +475,13 @@ export function enableInteractions(doc, onCommitOrOpts) {
   // hover 只加一个类，透明度由 CSS 变量决定，绝不覆盖用户设置
   const onEnter = () => root.classList.add('hover');
   const onLeave = () => root.classList.remove('hover');
+
+  // 窗口尺寸变了（或页面缩放）可用高度也会变，顺手重排一次
+  let resizeTimer = null;
+  const onWinResize = () => {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => relayoutOverlay(doc), 180);
+  };
   if (bar.addEventListener) {
     bar.addEventListener('pointerenter', onEnter);
     bar.addEventListener('pointerleave', onLeave);
@@ -419,6 +492,7 @@ export function enableInteractions(doc, onCommitOrOpts) {
   bar.addEventListener('pointerdown', onBarDown);
   resizer.addEventListener('pointerdown', onResizeDown);
   root.addEventListener('click', onHideClick);
+  if (win.addEventListener) win.addEventListener('resize', onWinResize);
 
   return () => {
     bar.removeEventListener('pointerenter', onEnter);
@@ -428,6 +502,8 @@ export function enableInteractions(doc, onCommitOrOpts) {
     bar.removeEventListener('pointerdown', onBarDown);
     resizer.removeEventListener('pointerdown', onResizeDown);
     root.removeEventListener('click', onHideClick);
+    if (win.removeEventListener) win.removeEventListener('resize', onWinResize);
+    if (resizeTimer) clearTimeout(resizeTimer);
     win.removeEventListener('pointermove', onPointerMove);
     win.removeEventListener('pointerup', onPointerUp);
   };

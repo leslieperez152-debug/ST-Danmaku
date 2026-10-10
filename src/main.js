@@ -562,6 +562,12 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       const old = state.frames.get(mid);
       if (old) stopFrame(old);
 
+      /**
+       * ⚠️ `createFrame` **有副作用**：它会把最终颜色写回 items，并按计划轨道排节点。
+       * 所以只有"确定要挂上去"的时候才调用它。
+       * 曾经写成无条件先 createFrame 再判断挂载结果 —— 挂不上时这次调用白做，
+       * 却已经把 items 改了一遍，后续渲染就拿到被污染的数据，框直接出不来。
+       */
       const frame = createFrame({
         doc,
         appearance: app,
@@ -571,6 +577,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         // 框上的「重播 / 生成」接到统一入口（这样记账与历史也会一起更新）
         onAction: (act) => handleQuickAction(act, batch),
       });
+
+      // 先试着挂上去；挂不上就**不要**把改动留在 items 上
       const mounted = mountFrame({ doc, messageId: mid, frame });
       if (mounted) {
         state.frames.set(mid, frame);
@@ -587,6 +595,9 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
           relayoutIfNeeded(batch);
           playFrame(frame, { doc, appearance: app });
         }
+      } else {
+        // 挂不上：把颜色补回去（createFrame 之外的地方也要用），并清掉这次没用的节点
+        logLine('这一楼挂不上弹幕框，只走悬浮层', 'warn');
       }
     }
 

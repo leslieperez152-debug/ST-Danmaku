@@ -3573,6 +3573,244 @@ await test('间距倍数：2.2 倍确实把同轨间隔拉得更开', () => {
   }
 });
 
+/* ───────────── 楼层弹幕框必须出现（不变量） ───────────── */
+
+section('13m. 楼层弹幕框必须真的出现在 DOM 里');
+
+/** 造一个带真实楼层结构的文档，让 mountFrame 能按 mesid 找到锚点 */
+function makeFrameEnv() {
+  const d = createMiniDocument();
+  useDoc(d);
+  resetTavernState();
+  const chat = d.createElement('div');
+  chat.id = 'chat';
+  d.body.appendChild(chat);
+  for (const i of [0, 1]) {
+    const mes = d.createElement('div');
+    mes.className = 'mes';
+    mes.setAttribute('mesid', String(i));
+    mes._rect = { left: 0, top: i * 120, width: 600, height: 120, right: 600, bottom: i * 120 + 120 };
+    const block = d.createElement('div');
+    block.className = 'mes_block';
+    const t = d.createElement('div');
+    t.className = 'mes_text';
+    t.textContent = i === 0 ? '（开场）' : '他抬起左手。';
+    block.appendChild(t);
+    mes.appendChild(block);
+    chat.appendChild(mes);
+  }
+  const app = mainMod.createApp({ storage: d.defaultView.localStorage, doc: d, win: d.defaultView });
+  app.init();
+  return { d, app, chat };
+}
+
+async function queueOneBatch(n = 2) {
+  resetMockConnection();
+  queueResponse({
+    choices: [
+      {
+        message: {
+          content: JSON.stringify({
+            弹幕: Array.from({ length: n }, (_, i) => ({
+              昵称: `观众${i}`,
+              内容: `这是第${i}条弹幕`,
+              类型: '普通',
+              回复: '',
+            })),
+          }),
+        },
+      },
+    ],
+  });
+}
+
+await test('默认设置下，出一批之后弹幕框必须真的挂在楼层下面', async () => {
+  const { d, app, chat } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
+  await queueOneBatch(2);
+
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, `生成应当成功：${res.error}`);
+
+  const frame = d.querySelector('.std-frame');
+  ok(frame, '❌ 弹幕框必须出现在 DOM 里（这是硬不变量，不出现就是回归）');
+  eq(frame.parentElement, chat, '框应当是聊天区的直接子节点');
+  ok(frame.querySelector('.std-frame-head'), '框必须有标题栏（否则整块看不见）');
+  ok(frame.querySelector('.std-frame-stage'), '框必须有舞台');
+  // 锚在 1 楼之下 —— 也就是在它的后面
+  const mes1 = d.querySelector('.mes[mesid="1"]');
+  const kids = chat.children;
+  ok(kids.indexOf(frame) > kids.indexOf(mes1), '框应当在第 1 楼之后');
+  app.destroy();
+});
+
+await test('开了悬浮层时，弹幕框照样要出现（两边不能互相影响）', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({
+    seedDemo: false,
+    count: 2,
+    api: { useJsonSchema: false },
+    appearance: { frameEnabled: true, overlayEnabled: true },
+  });
+  await queueOneBatch(2);
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, res.error);
+  ok(d.querySelector('.std-frame'), '开了悬浮层也必须挂框');
+  ok(d.getElementById('std-overlay'), '悬浮层也该在');
+  app.destroy();
+});
+
+await test('找不到楼层时，框要退回挂在聊天区末尾（而不是干脆不出现）', async () => {
+  const { d, app, chat } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
+  await queueOneBatch(2);
+  // 一个不存在的楼层号
+  const res = await app.runBatch({ messageId: 999, manual: true });
+  ok(res.ok, res.error);
+  const frame = d.querySelector('.std-frame');
+  ok(frame, '锚点找不到时也必须挂出来（退到聊天区）');
+  eq(frame.parentElement, chat, '应当挂在聊天区里');
+  app.destroy();
+});
+
+await test('开场白不挂框，但后续楼层照挂', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false }, skipOpening: true });
+  // 每次 runBatch 都要有自己的回复，否则第二次会"没东西可生成"
+  await queueOneBatch(2);
+  await app.runBatch({ messageId: 0, manual: true });
+  eq(d.querySelectorAll('.std-frame').length, 0, '开场白不该挂框');
+  // 1 楼 = 正常楼层
+  await queueOneBatch(2);
+  const r = await app.runBatch({ messageId: 1, manual: true });
+  ok(r.ok, `第二次生成也应当成功：${r.error}`);
+  eq(d.querySelectorAll('.std-frame').length, 1, '正常楼层应当挂框');
+  app.destroy();
+});
+
+await test('框上必须带「重播」「生成」「收起」三个按钮', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
+  await queueOneBatch(2);
+  await app.runBatch({ messageId: 1, manual: true });
+  const head = d.querySelector('.std-frame .std-frame-head');
+  const acts = head.querySelectorAll('[data-std-act]').map((b) => b.getAttribute('data-std-act')).sort();
+  eq(acts.join(','), 'generate,hide,replay', `框上应当有三个按钮，实际 ${acts.join(',')}`);
+  app.destroy();
+});
+
+await test('播放阶段（requestAnimationFrame 里）抛异常也不该让框消失', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({ seedDemo: false, count: 2, api: { useJsonSchema: false } });
+  await queueOneBatch(2);
+
+  // 模拟真浏览器的 rAF：立刻同步执行回调，这样回调里的异常会直接冒出来
+  const win = d.defaultView;
+  const origRaf = win.requestAnimationFrame;
+  const errs = [];
+  win.requestAnimationFrame = (fn) => {
+    try {
+      fn();
+    } catch (e) {
+      errs.push(e.message);
+    }
+    return 1;
+  };
+
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, res.error);
+  eq(errs.length, 0, `播放阶段不该抛异常，实际：${errs.join(' | ')}`);
+  ok(d.querySelector('.std-frame'), '播放之后框必须还在');
+
+  win.requestAnimationFrame = origRaf;
+  app.destroy();
+});
+
+await test('把悬浮层关掉、只留楼层框时，框照样要出现', async () => {
+  const { d, app } = makeFrameEnv();
+  app.updateSettings({
+    seedDemo: false,
+    count: 2,
+    api: { useJsonSchema: false },
+    appearance: { overlayEnabled: false, frameEnabled: true },
+  });
+  await queueOneBatch(2);
+  const res = await app.runBatch({ messageId: 1, manual: true });
+  ok(res.ok, res.error);
+  ok(d.querySelector('.std-frame'), '关掉悬浮层时框必须出现（这条路径以前没测过）');
+  app.destroy();
+});
+
+/* ───────────── 悬浮层拉伸后要重排 ───────────── */
+
+section('13n. 悬浮层均摊与拉伸重排');
+
+await test('spreadLanes：条数少于行数时均匀铺开，而不是挤在最上面', () => {
+  // 3 条弹幕、6 行 → 应当落在 0 / 2 / 5（大致等距），而不是 0 / 1 / 2
+  const three = overlayMod.spreadLanes(3, 6);
+  eq(three.length, 3);
+  eq(three[0], 0, '第一条在最上面');
+  ok(three[2] >= 5, `最后一条应当靠近最下面（铺开），实际 ${three.join(',')}`);
+  ok(new Set(three).size === 3, '不该有两条挤在同一行');
+  // 行数够时每条独占一行，且分布在整块高度内
+  const two = overlayMod.spreadLanes(2, 8);
+  ok(two[1] >= 7, `2 条 8 行时，第二条应当落到最下面，实际 ${two.join(',')}`);
+  // 条数多于行数时按序轮流
+  eq(overlayMod.spreadLanes(5, 2).join(','), '0,1,0,1,0');
+  eq(overlayMod.spreadLanes(0, 6).length, 0);
+  eq(overlayMod.spreadLanes(3, 1).join(','), '0,0,0');
+});
+
+await test('悬浮层：几条弹幕也要铺满整块高度（不能底下全空）', () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  const items = [0, 1, 2].map((n) => ({ 昵称: `v${n}`, 内容: `第${n}条`, color: '#fff', 速度: 110, 延迟: n, 轨道: n }));
+  ov.playOverlay(d2, items, { appearance: { overlayLoop: false, fontSize: 15 } });
+  const stage = d2.querySelector('.std-ov-stage');
+  const tops = [...stage.children].map((c) => parseFloat(c.style.top) || 0);
+  const maxTop = Math.max(...tops);
+  const stageH = stage.clientHeight || 160;
+  // 最后一条应当落在下半部分，而不是全挤在顶部
+  ok(maxTop >= stageH * 0.5, `最后一条应当落在下半部分（铺开），实际 top=${maxTop}，舞台高 ${stageH}`);
+  ov.stopOverlay(d2);
+});
+
+await test('拉伸之后重排：行数跟着新高度变，弹幕重新铺开', () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+  const stage = root.querySelector('.std-ov-stage');
+  const items = [0, 1, 2].map((n) => ({ 昵称: `v${n}`, 内容: `第${n}条`, color: '#fff', 速度: 110, 延迟: n, 轨道: n }));
+
+  // 先用一个矮舞台
+  stage._rect = { left: 0, top: 0, width: 400, height: 90, right: 400, bottom: 90 };
+  const first = ov.playOverlay(d2, items, { appearance: { overlayLoop: false, fontSize: 15 } });
+  const topsBefore = [...stage.children].map((c) => parseFloat(c.style.top) || 0);
+
+  // 拉高之后再重排
+  stage._rect = { left: 0, top: 0, width: 400, height: 360, right: 400, bottom: 360 };
+  const lanes = ov.relayoutOverlay(d2);
+  const topsAfter = [...stage.children].map((c) => parseFloat(c.style.top) || 0);
+
+  ok(lanes > first.lanes, `拉高之后行数应当变多：${first.lanes} → ${lanes}`);
+  ok(
+    Math.max(...topsAfter) > Math.max(...topsBefore),
+    `重排后应当铺得更开：${JSON.stringify(topsBefore)} → ${JSON.stringify(topsAfter)}`,
+  );
+  eq(stage.children.length, 3, '重排不该增删节点');
+  ov.stopOverlay(d2);
+});
+
+await test('拉伸重排：没有弹幕时不报错', () => {
+  const ov = doc2overlay();
+  const d2 = useDoc(createMiniDocument());
+  ov.ensureOverlay(d2);
+  eq(ov.relayoutOverlay(d2), 0, '没弹幕时应当安全返回 0');
+  ov.stopOverlay(d2);
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {
