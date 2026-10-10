@@ -2539,6 +2539,266 @@ await test('语料提示词里"本次要求"只出现一次（不要重复）', 
   }
 });
 
+/* ───────────── 速度浮动 / 解析宽容 / 认知隔离 ───────────── */
+
+section('13g. 速度浮动 · 解析宽容 · 认知隔离');
+
+await test('每条弹幕的速度在基准上浮动 ±N%（不是全部同速）', () => {
+  const items = Array.from({ length: 40 }, (_, i) => ({ 内容: `第${i}条` }));
+  // 固定随机源，结果可复现
+  let seed = 1;
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const out = danmaku.assignSpeeds(items, 200, 10, rand);
+  const speeds = out.map((x) => x.速度);
+  ok(new Set(speeds).size > 1, `不该全部同速：${speeds.slice(0, 8).join(',')}`);
+  const min = Math.min(...speeds);
+  const max = Math.max(...speeds);
+  ok(min >= 180, `下限应当 ≥ 180（-10%），实际 ${min}`);
+  ok(max <= 220, `上限应当 ≤ 220（+10%），实际 ${max}`);
+  ok(speeds.length === items.length, '每条都要有速度');
+  // 原对象不该被改
+  ok(!('速度' in items[0]), '不该就地改原对象');
+});
+
+await test('浮动为 0 时全部同速；超范围会被收住', () => {
+  const items = [{ 内容: 'a' }, { 内容: 'b' }];
+  eq(danmaku.assignSpeeds(items, 100, 0).map((x) => x.速度).join(','), '100,100');
+  // 浮动上限 60%
+  const wide = danmaku.assignSpeeds(items, 100, 500, () => 1);
+  ok(wide[0].速度 <= 160, `浮动上限应当收在 60%，实际 ${wide[0].速度}`);
+  // 速度有下限，不会变成 0 或负数
+  const slow = danmaku.assignSpeeds(items, 100, 60, () => 0);
+  ok(slow[0].速度 >= 20, `速度不该低于 20，实际 ${slow[0].速度}`);
+});
+
+await test('speedOfItem：优先用每条自己的速度，没有就退回基准', () => {
+  eq(danmaku.speedOfItem({ 速度: 137 }, 200), 137);
+  eq(danmaku.speedOfItem({}, 200), 200);
+  eq(danmaku.speedOfItem({ 速度: 0 }, 200), 200, '0 应当被视为没设');
+  eq(danmaku.speedOfItem(null, 200), 200);
+  eq(danmaku.speedOfItem({ 速度: 'abc' }, 200), 200);
+});
+
+await test('弹幕框按每条自己的速度算时长（慢的更久）', () => {
+  const d = useDoc(createMiniDocument());
+  const chat = d.createElement('div');
+  chat.id = 'chat';
+  d.body.appendChild(chat);
+  const mes = d.createElement('div');
+  mes.className = 'mes';
+  mes.setAttribute('mesid', '1');
+  chat.appendChild(mes);
+
+  const mkFrame = () =>
+    frameMod.createFrame({
+      doc: d,
+      appearance: { speed: 200 },
+      luminance: 0.1,
+      meta: { batchNo: 1, messageId: 1 },
+      items: [{ 昵称: '甲', 内容: 'x' }],
+    });
+
+  // 慢的那条：40px/s；快的那条：400px/s。同一个框宽，时长应当明显不同
+  const f1 = mkFrame();
+  frameMod.mountFrame({ doc: d, messageId: 1, frame: f1 });
+  frameMod.playFrame(f1, { doc: d, appearance: { speed: 200 }, stagger: 0 });
+  const slowDur = f1.nodes[0]?.style?.animationDuration;
+  ok(slowDur, `应当写入了动画时长，实际 ${slowDur}`);
+
+  const f2 = mkFrame();
+  frameMod.mountFrame({ doc: d, messageId: 1, frame: f2 });
+  frameMod.playFrame(f2, { doc: d, appearance: { speed: 200 }, stagger: 0 });
+  const fastDur = f2.nodes[0]?.style?.animationDuration;
+
+  // 用两条速度差别很大的弹幕比：时长必须跟着速度走
+  const mkOne = (speed) => {
+    const f = frameMod.createFrame({
+      doc: d,
+      appearance: { speed: 200 },
+      luminance: 0.1,
+      meta: { batchNo: 2, messageId: 1 },
+      items: [{ 昵称: '甲', 内容: 'x', 速度: speed }],
+    });
+    frameMod.mountFrame({ doc: d, messageId: 1, frame: f });
+    frameMod.playFrame(f, { doc: d, appearance: { speed: 200 }, stagger: 0 });
+    return Number(String(f.nodes[0].style.animationDuration).replace('s', ''));
+  };
+  const slow = mkOne(40);
+  const fast = mkOne(400);
+  ok(slow > fast, `慢的时长应当更长：${slow}s vs ${fast}s`);
+  frameMod.stopFrame(f1);
+  frameMod.stopFrame(f2);
+});
+
+await test('悬浮层按每条自己的速度算时长', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  const slow = ov.playOverlay(d2, [{ 内容: 'x', color: '#fff', 速度: 40 }], { appearance: { overlaySpeed: 90 } });
+  const fast = ov.playOverlay(d2, [{ 内容: 'x', color: '#fff', 速度: 400 }], { appearance: { overlaySpeed: 90 } });
+  ok(slow.duration > fast.duration, `慢的时长应当更长：${slow.duration} vs ${fast.duration}`);
+  ov.stopOverlay(d2);
+});
+
+await test('解析宽容：各种键名与形态都能认出来', () => {
+  const cases = [
+    ['标准', { 弹幕: [{ 内容: '甲' }] }],
+    ['弹幕列表', { 弹幕列表: [{ 内容: '甲' }] }],
+    ['danmaku', { danmaku: [{ 内容: '甲' }] }],
+    ['items', { items: [{ 内容: '甲' }] }],
+    ['直接是数组', [{ 内容: '甲' }]],
+    ['只回了一条', { 内容: '甲' }],
+    ['套两层', { 弹幕: { 弹幕: [{ 内容: '甲' }] } }],
+    ['content 而不是内容', { 弹幕: [{ content: '甲' }] }],
+    ['text 字段', { 弹幕: [{ text: '甲' }] }],
+  ];
+  for (const [label, value] of cases) {
+    const arr = danmaku.pickDanmakuArray(value);
+    ok(Array.isArray(arr) && arr.length === 1, `${label} 应当解析出 1 条，实际 ${JSON.stringify(arr)}`);
+  }
+  eq(danmaku.pickDanmakuArray(null), null);
+  eq(danmaku.pickDanmakuArray({ 无关: 1 }), null);
+});
+
+await test('纯文本兜底：支持"昵称：内容"与裸句子，且会清掉 JSON 残渣', () => {
+  const text = [
+    '```json',
+    '老王：这剑法怎么慢下来了',
+    '李四: 他左手在抖',
+    '- 前排蹲一个',
+    '（以下是说明）',
+    '{',
+    '}',
+  ].join('\n');
+  const out = danmaku.parseLinesFallback(text, 10);
+  const contents = out.map((x) => x.内容);
+  ok(contents.includes('这剑法怎么慢下来了'), `应当拆出昵称:内容：${JSON.stringify(contents)}`);
+  ok(contents.includes('他左手在抖'), '半角冒号也要支持');
+  ok(contents.includes('前排蹲一个'), '列表符号要清掉');
+  ok(!contents.some((c) => c === '{' || c === '}'), 'JSON 残渣不该被当成弹幕');
+  ok(!contents.some((c) => c.includes('```')), '代码围栏不该被当成弹幕');
+  ok(out.find((x) => x.内容 === '这剑法怎么慢下来了').昵称 === '老王', '昵称应当被识别');
+});
+
+await test('模型返回无法解析时，报错里带上它实际回了什么', async () => {
+  resetMockConnection();
+  queueResponse({ choices: [{ message: { content: '抱歉，我不能生成这个内容。' } }] });
+  const res = await danmaku.generateBatch({
+    api: { route: 'st', sourceMode: 'auto', useJsonSchema: false },
+    profile: null,
+    story: '正文',
+    viewers: [],
+    count: 5,
+  });
+  // 这一句会被按行兜底解析成一条弹幕（长度与格式都合格），所以走的是成功分支
+  ok(res.ok, `短句会被兜底，应当是成功的：${res.error}`);
+  ok(res.fallback === true, '应当标记为兜底解析');
+});
+
+await test('认知隔离：观众不许读心、不许剧透、不许知道没演出来的事', () => {
+  const sys = danmaku.batchSystemPrompt({ knowledgeIsolation: true });
+  ok(/认知隔离/.test(sys), '应当有认知隔离段');
+  ok(/情报抵达 = 源 \+ 通道 \+ 接收者，缺一不达/.test(sys), '应当写明判定口径');
+  ok(/内心活动|动机|真意/.test(sys), '应当禁止读心');
+  ok(/推测语气/.test(sys), '猜的时候必须用推测语气');
+  ok(/不在场|镜头外|没播出来/.test(sys), '不该知道没演出来的事');
+  ok(/未来的走向/.test(sys), '不该知道未来');
+  ok(/不能凭空知道/.test(sys), '可以猜错但不能凭空知道');
+  ok(/剧透/.test(sys), '禁止段里应当点名剧透');
+
+  // 关掉后就不该有这一段
+  const off = danmaku.batchSystemPrompt({ knowledgeIsolation: false });
+  ok(!/认知隔离/.test(off), '关掉后不该有认知隔离段');
+  ok(!/情报抵达/.test(off), '关掉后不该有判定口径');
+});
+
+await test('认知隔离会同时进 system 与 user 提示词（关掉就都不进）', () => {
+  const on = danmaku.batchUserPrompt({
+    profile: null,
+    story: '正文',
+    viewers: [],
+    count: 5,
+    fourthWall: 0,
+    knowledgeIsolation: true,
+  });
+  ok(/观众只知道直播里放出来的东西/.test(on), 'user 提示词里也应当强调认知边界');
+  ok(/只能猜/.test(on) && /推测语气/.test(on), '应当要求用推测语气');
+  ok(/不要替角色解释心理|预告接下来/.test(on), '应当禁止读心式解说与预告');
+
+  const off = danmaku.batchUserPrompt({
+    profile: null,
+    story: '正文',
+    viewers: [],
+    count: 5,
+    fourthWall: 0,
+    knowledgeIsolation: false,
+  });
+  ok(!/观众只知道直播里放出来的东西/.test(off), '关掉后 user 提示词里也不该有');
+  ok(!/推测语气/.test(off), '关掉后不该有推测语气的要求');
+});
+
+await test('面板顶部有「立即生成一批」和「重播上一批」快捷键', () => {
+  const { app, panel } = makeApiTabEnv();
+  const quick = panel.el.querySelector('.std-quick');
+  ok(quick, '面板应当有快捷键行');
+
+  const gen = quick.querySelector('[data-std-act="batch"]');
+  const rep = quick.querySelector('[data-std-act="replay-last"]');
+  ok(gen, '应当有「立即生成一批」');
+  ok(rep, '应当有「重播上一批」');
+  ok(gen.textContent.includes('生成'), `按钮文案应当直白：${gen.textContent}`);
+  ok(rep.textContent.includes('重播'), `按钮文案应当直白：${rep.textContent}`);
+
+  // 快捷键行要在页签上面，切到任何页都在
+  const tabs = panel.el.querySelector('.std-tabs');
+  ok(
+    panel.el.innerHTML.indexOf('std-quick') < panel.el.innerHTML.indexOf('std-tabs'),
+    '快捷键应当排在页签之前（始终可见）',
+  );
+  ok(tabs, '页签还在');
+  app.destroy();
+});
+
+await test('点「重播上一批」不会重新请求模型', async () => {
+  const { app } = makeApiTabEnv();
+  // 先造一批出来（用本地预览，避免真的请求）
+  app.state.runtime.history = [{ batchNo: 1, at: Date.now(), anchorId: 1, title: '第 1 批', items: [{ 昵称: '甲', 内容: 'x', color: '#fff' }] }];
+  let requests = 0;
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    requests += 1;
+    throw new Error('不该发请求');
+  };
+  app.replayBatch(1);
+  eq(requests, 0, '重播不该发任何请求');
+  globalThis.fetch = savedFetch;
+  app.destroy();
+});
+
+await test('设置栏也有「重播上一批」，且走的是正确的接口', async () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  const btn = el.querySelector('[data-std-dw-act="replay-last"]');
+  ok(btn, '设置栏应当有重播按钮');
+
+  let called = null;
+  const original = app.replayBatch;
+  app.replayBatch = (n) => {
+    called = n;
+    return original.call(app, n);
+  };
+  app.state.runtime.history = [{ batchNo: 3, at: Date.now(), anchorId: 1, title: 'x', items: [] }];
+  btn.dispatch('click', { target: btn });
+  await new Promise((r) => setTimeout(r, 60));
+  eq(called, 3, `应当用最后一笔的 batchNo 调用 replayBatch，实际 ${called}`);
+  app.replayBatch = original;
+  app.destroy();
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

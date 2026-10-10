@@ -66,7 +66,13 @@ export function defaultSettings() {
     audience: {
       poolSize: 10, // 生成名册时固定 ID 的数量
       activePerBatch: 6, // 每批里固定 ID 最多露脸几个
-      fourthWall: 20, // 破次元度 0~100：0 完全本土化，100 大量现实网络梗
+      fourthWall: 20, // 破次元度 0~100
+      /**
+       * 认知隔离（反全知）：观众只知道直播里放出来的东西。
+       * 口径参考社区通用的「心之壁·认知隔离」——情报抵达 = 源 + 通道 + 接收者，缺一不达。
+       * 关掉的话观众会变得全知（会读心、会剧透），一般不该关。
+       */
+      knowledgeIsolation: true, // 关掉观众就会全知（读心、剧透），一般不该关
     },
 
     /* API */
@@ -109,6 +115,7 @@ export function defaultSettings() {
       frameHeight: 148,
       speed: 110, // px/s（弹幕框的飞行速度）
       overlaySpeed: 90, // px/s（悬浮层的飞行速度，单独可调：悬空看和贴在楼层里观感不同）
+      speedVariance: 5, // 每条弹幕的速度在基准上下的浮动幅度（百分比，±5% 让它们不要整齐划一）
       fontSize: 15,
       gap: 16, // 同轨最小间隔 px
       opacity: 1,
@@ -225,6 +232,7 @@ export function normalizeSettings(s) {
   out.audience.poolSize = num(out.audience.poolSize, 10, 0, 60);
   out.audience.activePerBatch = num(out.audience.activePerBatch, 6, 0, 60);
   out.audience.fourthWall = num(out.audience.fourthWall, 20, 0, 100);
+  out.audience.knowledgeIsolation = asBool(out.audience.knowledgeIsolation, true);
 
   if (!['st', 'direct'].includes(out.api.route)) out.api.route = 'st';
   if (!['auto', 'fixed'].includes(out.api.sourceMode)) out.api.sourceMode = 'auto';
@@ -249,6 +257,7 @@ export function normalizeSettings(s) {
 
   out.appearance.speed = num(out.appearance.speed, 110, 20, 900);
   out.appearance.overlaySpeed = num(out.appearance.overlaySpeed, 90, 20, 900);
+  out.appearance.speedVariance = num(out.appearance.speedVariance, 5, 0, 60);
   out.appearance.fontSize = num(out.appearance.fontSize, 15, 8, 48);
   out.appearance.frameHeight = num(out.appearance.frameHeight, 148, 48, 600);
   out.appearance.gap = num(out.appearance.gap, 16, 0, 200);

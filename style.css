@@ -1019,6 +1019,20 @@ textarea.std-input {
   line-height: 1.6;
 }
 
+/* 面板快捷键行：最常用的两个动作固定在顶部，切到哪个页都在 */
+.std-quick {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.std-quick .std-btn {
+  flex: 1;
+  text-align: center;
+  justify-content: center;
+}
+
 .std-dw-subbtns {
   display: flex;
   flex-wrap: wrap;

@@ -77,6 +77,7 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
           <div class="std-dw-btns">
             <div class="menu_button std-dw-btn" data-std-dw-act="batch">出一批</div>
+            <div class="menu_button std-dw-btn" data-std-dw-act="replay-last">重播上一批</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="demo">本地预览</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="open">打开完整设置</div>
           </div>
@@ -236,6 +237,18 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
       return;
     }
 
+    if (act === 'replay-last') {
+      const hist = app.state.runtime.history;
+      const last = hist[hist.length - 1];
+      if (last) {
+        app.replayBatch(last.batchNo);
+        setResult('✅ 已重播最近一批（没有重新请求模型）');
+      } else {
+        setResult('⚠️ 还没有可重播的批次');
+      }
+      render();
+      return;
+    }
     if (act === 'batch') {
       setResult('⏳ 正在生成…');
       const res = await app.runBatch({ manual: true });

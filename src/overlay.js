@@ -9,6 +9,8 @@
  *   · 鼠标离开就恢复穿透。
  */
 
+import { speedOfItem } from './danmaku.js';
+
 export const OVERLAY_ID = 'std-overlay';
 
 const MIN_W = 240;
@@ -161,16 +163,17 @@ export function playOverlay(doc, items, opts = {}) {
 
   const laneH = Math.round((Number(app.fontSize) || 15) * 1.9);
   const lanes = Math.max(1, Math.floor(root.clientHeight / laneH));
-  const speed = Math.max(20, overlaySpeedOf(app));
+  const baseSpeed = Math.max(20, overlaySpeedOf(app));
   const width = root.clientWidth || 800;
-  const duration = Math.max(4, (width + 340) / speed);
+  // 每条用自己的速度（生成时定死），重播保持一致
+  const durationFor = (item) => Math.max(4, (width + 340) / speedOfItem(item, baseSpeed));
 
   items.forEach((item, i) => {
     const node = doc.createElement('div');
     node.className = 'std-ov-item';
     node.style.top = `${(i % lanes) * laneH}px`;
     node.style.color = item.color || '#fff';
-    node.style.animationDuration = `${duration.toFixed(2)}s`;
+    node.style.animationDuration = `${durationFor(item).toFixed(2)}s`;
     node.style.animationDelay = `${(i * stagger).toFixed(2)}s`;
 
     if (item.昵称) {
@@ -188,7 +191,10 @@ export function playOverlay(doc, items, opts = {}) {
 
   if (countEl) countEl.textContent = `${items.length} 条`;
 
-  const totalMs = (items.length * stagger + duration) * 1000 + 300;
+  // 按最慢的那条算收尾时刻，否则会提前把还在飞的弹幕清掉
+  const durations = items.map((it) => durationFor(it));
+  const maxDuration = durations.length ? Math.max(...durations) : 4;
+  const totalMs = (items.length * stagger + maxDuration) * 1000 + 300;
   const timer = setTimeout(() => {
     if (app.overlayFade === true) {
       // 用户明确要求"播完淡出"：整层淡下去（层还在，鼠标移进去仍能拖动）
@@ -203,7 +209,7 @@ export function playOverlay(doc, items, opts = {}) {
   }, totalMs);
   root.__std.timers.push(timer);
 
-  return { duration, totalMs, lanes };
+  return { duration: maxDuration, totalMs, lanes };
 }
 
 /**

@@ -137,16 +137,41 @@ export async function buildViewerPool({ api, profile, poolSize, existing = [] })
 
 /* ───────────── 弹幕批次 ───────────── */
 
-export function batchSystemPrompt() {
+/**
+ * 认知隔离（观众视角的反全知）。
+ *
+ * 口径参考社区通用的「心之壁·认知隔离」规则：**情报抵达 = 源 + 通道 + 接收者，缺一不达**。
+ * 落到弹幕上就是：观众只知道自己从直播里看到/听到的那部分，
+ * 不是读者，不是上帝 —— 他们看不到内心、看不到镜头外、看不到没播出来的前情。
+ * 这条比"要像弹幕"还重要：一旦观众开始全知，弹幕就变成了剧透器。
+ */
+export const KNOWLEDGE_RULES = [
+  '【认知隔离 · 反全知（与体裁铁律同级，不得违反）】',
+  '这批观众**只是看直播的人**。他们知道什么，完全取决于"直播里放出来了什么"。',
+  '',
+  '判定口径：**情报抵达 = 源 + 通道 + 接收者，缺一不达。**',
+  '· 只对**正文里实际写出来的内容**有反应。正文没写的事，他们不知道、不能提。',
+  '· 正文没写出来的**内心活动、动机、真意、后续打算** —— 他们**不可知**，只能猜；',
+  '  猜的时候必须用推测语气（"他这是要干嘛""我赌五毛"），**不能当成事实陈述**。',
+  '· **不在场发生的事、镜头外的事、没播出来的前情与往事** —— 他们不知道。',
+  '  哪怕设定资料里有，只要正文没演出来，观众就不该"早就知道"。',
+  '· **未来的走向** —— 他们不可能知道。可以押注、可以预判，但不许笃定地宣布结果。',
+  '· 不要替角色解说心理（"他其实是在试探"这种是旁白，不是弹幕）。',
+  '· 观众之间**信息量参差**：有人看出来一点，有人完全没看懂，有人看错了 —— 这很正常，',
+  '  反而更真实。不要人人都懂、人人都对。',
+  '· 他们可以**误解、可以捕风捉影、可以瞎猜**，但**不能凭空知道**。',
+].join('\n');
+
+export function batchSystemPrompt({ knowledgeIsolation = true } = {}) {
   return [
     '你是一个直播间弹幕生成器。你只负责写弹幕，不写别的任何东西。',
     '',
     GENRE_RULES,
+    ...(knowledgeIsolation ? ['', KNOWLEDGE_RULES] : []),
     '',
     '身份与用词：',
     '· 这批观众是这个世界里的本地人。他们用这个世界的词、这个世界的常识、这个世界的立场说话。',
     '· 称呼台上的人时，用这个世界的称呼体系（头衔、绰号、门派名等），不要用"角色""主角""玩家"这类元语言。',
-    '· 他们知道正在发生什么（下面给了正文），但他们只知道"看到的部分"，不知道内情、不知道未来、不读心。',
     '',
     '与剧情的关系：',
     '· **每一条都应当能从给出的正文里找到由头** —— 某个动作、某句话、某个转折、某个人物的称呼、',
@@ -167,6 +192,7 @@ export function batchSystemPrompt() {
     '· 禁止重复同一句话来凑数。',
     '· **禁止空洞套话**：这波稳了 / 666 / 前排 / 来了来了 / 散了散了 / 坐等 / 好家伙 这类',
     '  放到任何直播间都成立的话，单独出现即为不合格（详见体裁铁律）。',
+    '· 禁止剧透式发言：不许把"接下来他会……""其实他早就……"这种全知内容当成弹幕。',
   ].join('\n');
 }
 
@@ -206,7 +232,7 @@ export function renderProfileForPrompt(profile) {
   }
   return out.join('\n');
 }
-export function batchUserPrompt({ profile, story, viewers, count, fourthWall, recentGags }) {
+export function batchUserPrompt({ profile, story, viewers, count, fourthWall, recentGags, knowledgeIsolation = true }) {
   const parts = [];
   parts.push('【本直播间观众档案】');
   parts.push(renderProfileForPrompt(profile));
@@ -259,6 +285,17 @@ export function batchUserPrompt({ profile, story, viewers, count, fourthWall, re
   );
   parts.push('');
 
+  if (knowledgeIsolation) {
+    // 放到任务前面再强调一次：单靠 system 容易被长材料淹没
+    parts.push('【再次强调 · 观众只知道直播里放出来的东西】');
+    parts.push('· 下面【正在直播的内容】就是他们**全部**的信息来源；档案里的世界事实只是背景常识，');
+    parts.push('  **不等于**他们知道这一段里发生了什么。');
+    parts.push('· 没写出来的内心、动机、真意、往事、镜头外的事、后续走向 —— 他们不知道，只能猜；');
+    parts.push('  猜就必须用推测语气（"他这是要干嘛""我赌五毛"），不许说成事实。');
+    parts.push('· 不要替角色解释心理，也不要预告接下来会发生什么。');
+    parts.push('');
+  }
+
   parts.push(`【任务】生成 ${count} 条弹幕。`);
   parts.push('【自检】交出去之前，逐条问一遍："这条是在回应正文的哪一句？"答不上来的就重写。');
   parts.push('不要把"这波稳了"这类放之四海皆准的话凑进来 —— 每条都要有具体的由头。');
@@ -300,6 +337,63 @@ export function batchJsonSchema(count) {
 }
 
 /**
+ * 从模型返回值里找出弹幕数组。
+ * 结构化输出默认是关的，各家模型写法五花八门，所以这里要宽容：
+ *   {弹幕:[…]} / {弹幕列表:[…]} / {danmaku:[…]} / {items:[…]} / 直接就是数组 / 单条对象
+ * 甚至 {弹幕:{弹幕:[…]}} 这种套两层。
+ */
+export function pickDanmakuArray(value) {
+  if (!value) return null;
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'object') return null;
+  const keys = ['弹幕', '弹幕列表', 'danmaku', 'danmakus', 'items', 'list', 'barrage', 'comments', '评论'];
+  for (const k of keys) {
+    if (Array.isArray(value[k])) return value[k];
+    // 套了一层（例如 {弹幕:{弹幕:[…]}}）
+    if (value[k] && typeof value[k] === 'object') {
+      const inner = pickDanmakuArray(value[k]);
+      if (inner) return inner;
+    }
+  }
+  // 只返回了一条的情况：看它有没有弹幕内容的字段
+  if (typeof value.内容 === 'string' || typeof value.content === 'string' || typeof value.text === 'string') {
+    return [value];
+  }
+  return null;
+}
+
+/**
+ * 纯文本兜底：把一段话按行拆成弹幕。
+ * 支持 "昵称：内容" / "昵称: 内容" / "内容" 三种形态。
+ */
+export function parseLinesFallback(text, limit) {
+  const out = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    let line = raw
+      .replace(/^\s*[-*•·]\s+/, '')
+      .replace(/^\s*\d+[.、)]\s*/, '')
+      .replace(/^\s*[「『"'"']\s*/, '')
+      .trim();
+    // 去掉尾部逗号，避免最后一条被 JSON 残渣污染
+    line = line.replace(/[",]\s*$/, '').replace(/」|』$/,'').trim();
+    if (!line || line.length < 2 || line.length > 80) continue;
+    // 跳过看起来像 JSON 结构、代码围栏或说明文字的行
+    if (/^[{}\[\]"']*$/.test(line)) continue;
+    if (/^```/.test(line)) continue;
+    if (/^(弹幕|输出|说明|以下是|JSON)/.test(line)) continue;
+
+    const m = /^([^：:]{1,16})[：:]\s*(.+)$/.exec(line);
+    if (m) {
+      out.push({ 昵称: m[1].trim(), 内容: m[2].trim(), 类型: '普通', 回复: '' });
+    } else {
+      out.push({ 昵称: '', 内容: line, 类型: '普通', 回复: '' });
+    }
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
  * 生成一批弹幕。
  *
  * @param {object} input
@@ -311,8 +405,9 @@ export function batchJsonSchema(count) {
  * @param {number} input.fourthWall      破次元度 0~100
  * @param {number} [input.activeViewers] 本批最多让几个常驻观众露脸（提示用）
  * @param {string[]} [input.recentGags]
+ * @param {boolean} [input.knowledgeIsolation] 是否给观众加"认知隔离"约束
  * @param {(msg:string, level?:string)=>void} [input.log]
- * @returns {Promise<{ok:boolean, items:object[], error:string, raw:string}>}
+ * @returns {Promise<{ok:boolean, items:object[], error:string, raw:string, fallback?:boolean}>}
  */
 export async function generateBatch(input) {
   const {
@@ -323,57 +418,59 @@ export async function generateBatch(input) {
     count = 15,
     fourthWall = 20,
     recentGags = [],
+    knowledgeIsolation = true,
     log = () => {},
   } = input || {};
 
   const res = await chatJson({
     api,
     label: '弹幕生成',
-    system: batchSystemPrompt(),
-    user: batchUserPrompt({ profile, story, viewers, count, fourthWall, recentGags }),
+    system: batchSystemPrompt({ knowledgeIsolation }),
+    user: batchUserPrompt({ profile, story, viewers, count, fourthWall, recentGags, knowledgeIsolation }),
     jsonSchema: batchJsonSchema(count),
   });
 
   if (!res.ok) return { ok: false, items: [], error: res.error || '生成失败', raw: res.text || '' };
 
-  let list = null;
-  if (res.value && Array.isArray(res.value.弹幕)) list = res.value.弹幕;
-  else if (Array.isArray(res.value)) list = res.value;
-  else if (res.value && Array.isArray(res.value.danmaku)) list = res.value.danmaku;
+  let list = pickDanmakuArray(res.value);
+  let fallback = false;
 
   if (!list) {
     // 兜底：模型没按 JSON 回，就按行拆
-    const lines = String(res.text || '')
-      .split(/\r?\n/)
-      .map((l) => l.replace(/^[\s\-*\d.、）)]+/, '').trim())
-      .filter((l) => l && l.length >= 2 && l.length <= 80);
-    if (!lines.length) {
-      return { ok: false, items: [], error: '生成失败：模型没有返回可解析的弹幕', raw: res.text || '' };
+    list = parseLinesFallback(res.text, count);
+    fallback = list.length > 0;
+    if (!list.length) {
+      const head = String(res.text || '').slice(0, 200).replace(/\s+/g, ' ');
+      return {
+        ok: false,
+        items: [],
+        error: `生成失败：模型没有返回可解析的弹幕${head ? `｜它实际回的是：${head}` : '（返回为空）'}`,
+        raw: res.text || '',
+      };
     }
-    log(`模型没按 JSON 返回，已按行兜底解析出 ${lines.length} 条`, 'warn');
-    list = lines.slice(0, count).map((text, i) => ({ 昵称: '', 内容: text, 类型: '普通', 回复: '', _fallback: true }));
+    log(`模型没按 JSON 返回，已按行兜底解析出 ${list.length} 条`, 'warn');
   }
 
   const items = list
     .map((d, i) => {
-      let text = String(d?.内容 ?? d?.text ?? d?.content ?? '').trim();
-      const reply = String(d?.回复 ?? d?.reply ?? '').trim();
+      let text = String(d?.内容 ?? d?.text ?? d?.content ?? d?.message ?? '').trim();
+      const reply = String(d?.回复 ?? d?.reply ?? d?.at ?? '').trim();
       if (reply && !text.includes('@')) text = `@${reply} ${text}`;
       return {
         i,
-        昵称: String(d?.昵称 ?? d?.name ?? '').trim().slice(0, 16) || '路过的观众',
+        昵称: String(d?.昵称 ?? d?.name ?? d?.user ?? '').trim().slice(0, 16) || '路过的观众',
         内容: text.slice(0, 120),
-        类型: String(d?.类型 ?? d?.tone ?? '普通').trim().slice(0, 8),
+        类型: String(d?.类型 ?? d?.type ?? d?.tone ?? '普通').trim().slice(0, 8),
         回复: reply.slice(0, 16),
       };
     })
     .filter((d) => d.内容);
 
   if (!items.length) {
-    return { ok: false, items: [], error: '生成失败：解析后没有任何有效弹幕', raw: res.text || '' };
+    return { ok: false, items: [], error: '生成失败：解析后没有任何有效弹幕（内容字段可能为空）', raw: res.text || '' };
   }
 
-  return { ok: true, items, error: '', raw: res.text || '' };
+  return { ok: true, items, error: '', raw: res.text || '', fallback };
 }
 
 /* ───────────── 剧情来源与梗记忆 ───────────── */
@@ -402,7 +499,35 @@ export function buildStoryContext(messages, { rounds = 2, charBudget = 6000 } = 
 }
 
 /**
- * 从一批弹幕里挑出"可以被复读的梗"。
+ * 给每条弹幕定一个自己的飞行速度：以设定速度为基准上下浮动。
+ *
+ * 为什么要"定死在数据里"而不是渲染时随机：这样**重播和静态列表的快慢都一致**，
+ * 回看同一批时不会每条都变速度。
+ *
+ * @param {object[]} items
+ * @param {number} baseSpeed    基准速度 px/s
+ * @param {number} variancePct  浮动幅度（百分比，例如 5 表示 ±5%）
+ * @param {()=>number} [rand]   随机源，便于测试注入
+ */
+export function assignSpeeds(items, baseSpeed, variancePct, rand = Math.random) {
+  const base = Math.max(20, Number(baseSpeed) || 110);
+  // 浮动上限收在 60%：再大就不像"同一场直播里的弹幕"了
+  const pct = Math.min(60, Math.max(0, Number(variancePct) || 0));
+  return (items || []).map((it) => {
+    if (!pct) return { ...it, 速度: Math.round(base) };
+    const factor = 1 + ((rand() * 2 - 1) * pct) / 100;
+    return { ...it, 速度: Math.max(20, Math.round(base * factor)) };
+  });
+}
+
+/** 取一条弹幕的飞行速度：优先用它自己定好的，否则退回基准 */
+export function speedOfItem(item, baseSpeed) {
+  const own = Number(item?.速度);
+  if (Number.isFinite(own) && own > 0) return own;
+  return Math.max(20, Number(baseSpeed) || 110);
+}
+
+/** 从一批弹幕里挑出"可以被复读的梗"。
  *
  * 注意取舍方向和以前相反：以前优先挑最短最情绪化的，结果挑出来的全是
  * "稳了""666"这类空洞套话。现在优先挑**带具体指代**的（提到了某个人物、某个招式、

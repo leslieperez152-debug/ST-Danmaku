@@ -281,6 +281,11 @@ function pages(app) {
           row2('每批最多露脸', number('audience.activePerBatch', s.audience.activePerBatch, 0, 60, 1)),
           sep(),
           '<div class="std-sec">高级</div>',
+          row2(
+            '认知隔离（反全知）',
+            toggle('audience.knowledgeIsolation', s.audience.knowledgeIsolation, '开（默认）：观众只知道直播里放出来的东西，不看内心、不看镜头外、不剧透'),
+          ),
+          '<div class="std-hint">口径参考社区通用的「心之壁·认知隔离」：<b>情报抵达 = 源 + 通道 + 接收者，缺一不达</b>。<br>没有有效路径的信息，观众一律视为不知道 —— 只能猜，且必须用推测语气。关掉之后观众会开始读心和剧透，一般不该关。</div>',
           row2('破次元度', range('audience.fourthWall', s.audience.fourthWall, 0, 100, 5, '完全本土化 ←→ 大量现实网络梗')),
           '<div class="std-hint">默认偏低：观众按这个世界的语言说话。世界书里没有特定说话方式时，这个滑块影响会变小。</div>',
           sep(),
@@ -306,6 +311,11 @@ function pages(app) {
           row2('高度（px）', number('appearance.frameHeight', a.frameHeight, 48, 600, 4)),
           row2('字号（px）', number('appearance.fontSize', a.fontSize, 8, 48, 1)),
           row2('速度（px/秒）', number('appearance.speed', a.speed, 20, 900, 5), '越大飞得越快（只影响楼层里的弹幕框）'),
+          row2(
+            '速度浮动（±%）',
+            number('appearance.speedVariance', a.speedVariance, 0, 60, 1),
+            '每条弹幕在自己的速度上随机浮动这么多，让它们不要整齐划一。0 = 全部同速',
+          ),
           row2('同轨间隔（px）', number('appearance.gap', a.gap, 0, 200, 1)),
           row2('整块不透明度', range('appearance.opacity', a.opacity, 0.1, 1, 0.05), '整块弹幕框（含幕布与文字）一起变'),
           row2('显示轨道序号', toggle('appearance.showMeta', a.showMeta)),
@@ -604,8 +614,11 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
       <div class="std-head" data-std-dragpanel="1">
         <span class="std-title">弹幕直播间</span>
         <span class="std-head-status" data-std-status></span>
-        <button class="std-btn tiny" data-std-act="batch" title="立刻出一批">出一批</button>
         <button class="std-btn tiny" data-std-act="close">✕</button>
+      </div>
+      <div class="std-quick">
+        <button class="std-btn primary" data-std-act="batch" title="立刻按当前正文出一批弹幕">立即生成一批</button>
+        <button class="std-btn" data-std-act="replay-last" title="重播最近一批（不重新请求模型）">重播上一批</button>
       </div>
       <div class="std-tabs">${defs
         .map((dd) => `<button class="std-tab" data-std-tab="${dd.id}">${esc(dd.label)}</button>`)

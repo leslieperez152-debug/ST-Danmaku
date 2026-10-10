@@ -8,6 +8,7 @@
  */
 
 import { buildPalette } from './color.js';
+import { speedOfItem } from './danmaku.js';
 
 const HOST_CLASS = 'std-frame';
 const LANE_PAD = 6;
@@ -209,12 +210,15 @@ export function playFrame(frame, opts = {}) {
   frame.stage.appendChild(runner);
 
   const stageWidth = frame.stage.clientWidth || frame.el.clientWidth || 600;
-  const speed = Math.max(20, Number(appearance.speed) || Number(frame.el.style.getPropertyValue('--std-speed').replace('px/s', '')) || 110);
-  const duration = Math.max(4, (stageWidth + 320) / speed);
+  const baseSpeed = Math.max(20, Number(appearance.speed) || Number(frame.el.style.getPropertyValue('--std-speed').replace('px/s', '')) || 110);
+  // 每条弹幕用自己的速度（生成时已定死并存在数据里），这样重播与静态列表都一致。
+  // 时长要各自算，不能只算一次。
+  const durationFor = (item) => Math.max(4, (stageWidth + 320) / speedOfItem(item, baseSpeed));
 
   frame.nodes.forEach((node, i) => {
     const clone = node.cloneNode(true);
-    clone.style.animationDuration = `${duration.toFixed(2)}s`;
+    const dur = durationFor(frame.items && frame.items[i]);
+    clone.style.animationDuration = `${dur.toFixed(2)}s`;
     clone.style.animationDelay = `${(i * stagger).toFixed(2)}s`;
     clone.style.visibility = 'hidden';
     runner.appendChild(clone);
@@ -225,7 +229,10 @@ export function playFrame(frame, opts = {}) {
     frame.timers.push(timer);
   });
 
-  const totalMs = (frame.nodes.length * stagger + duration) * 1000 + 400;
+  // 整批播完的时刻要按"最慢的那条"算，否则会提前收尾、把还在飞的弹幕切掉
+  const durations = frame.nodes.map((_, i) => durationFor(frame.items && frame.items[i]));
+  const maxDuration = durations.length ? Math.max(...durations) : 4;
+  const totalMs = (frame.nodes.length * stagger + maxDuration) * 1000 + 400;
   const doneTimer = setTimeout(() => finishFrame(frame, appearance), totalMs);
   frame.timers.push(doneTimer);
 }
