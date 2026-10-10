@@ -95,6 +95,14 @@ export function readRect(doc) {
   };
 }
 
+/** 悬浮层的飞行速度（没单独设就退回弹幕框的速度） */
+export function overlaySpeedOf(appearance) {
+  const app = appearance || {};
+  const own = Number(app.overlaySpeed);
+  if (Number.isFinite(own) && own > 0) return own;
+  return Number(app.speed) || 110;
+}
+
 /** 应用外观设置（透明度 / 字号 / 速度 / 背景） */
 export function applyOverlayStyle(doc, appearance) {
   const root = doc.getElementById(OVERLAY_ID);
@@ -104,7 +112,7 @@ export function applyOverlayStyle(doc, appearance) {
   root.style.setProperty('--std-ov-opacity', String(app.overlayOpacity ?? 0.35));
   root.style.setProperty('--std-ov-fs', `${fs}px`);
   root.style.setProperty('--std-ov-lh', `${Math.round(fs * 1.9)}px`);
-  root.style.setProperty('--std-ov-speed', `${Number(app.speed) || 110}px/s`);
+  root.style.setProperty('--std-ov-speed', `${overlaySpeedOf(app)}px/s`);
   // 悬浮层背景：由用户在面板里选（预设色块或自由填写），默认给一层很淡的暗色
   root.style.setProperty(
     '--std-ov-bg',
@@ -153,7 +161,7 @@ export function playOverlay(doc, items, opts = {}) {
 
   const laneH = Math.round((Number(app.fontSize) || 15) * 1.9);
   const lanes = Math.max(1, Math.floor(root.clientHeight / laneH));
-  const speed = Math.max(20, Number(app.speed) || 110);
+  const speed = Math.max(20, overlaySpeedOf(app));
   const width = root.clientWidth || 800;
   const duration = Math.max(4, (width + 340) / speed);
 

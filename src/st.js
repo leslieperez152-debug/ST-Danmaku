@@ -562,7 +562,9 @@ export async function refreshWorldbookNames(force = false) {
     bookCache = [];
     bookCacheAt = Date.now();
   }
-  // entries 为 null（全部途径都失败）时保留旧缓存，不清空
+  // 一条都没拿到时，顺手清掉"IPC 不可用"的缓存 ——
+  // 否则那次失败会被一直记住，用户就得手动点按钮才可能出来（这正是之前的毛病）。
+  if (!bookCache.length) clearTauriIpcCache();
   return listWorldbookEntries();
 }
 

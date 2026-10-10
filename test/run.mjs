@@ -1967,6 +1967,134 @@ await test('不是 Tauri 客户端时，IPC 那一路安静失败', async () => 
   st.clearTauriIpcCache();
 });
 
+await test('【真实场景】Tauri IPC 晚一点才就绪时，启动会自动重试直到拿到清单', async () => {
+  const savedTauri = globalThis.__TAURI__;
+  const savedList = mockContext.worldInfoList;
+  const savedFetch = globalThis.fetch;
+  // 断掉别的途径，只留 IPC
+  delete mockContext.worldInfoList;
+  globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => null, text: async () => '' });
+
+  // IPC 要"过两次才就绪"，模拟扩展加载早于 Tauri 注入
+  let ready = 0;
+  delete globalThis.__TAURI__;
+  delete globalThis.window.__TAURI__;
+  setTimeout(() => {
+    ready += 1;
+    globalThis.window.__TAURI__ = {
+      core: {
+        invoke: async (cmd) => {
+          if (cmd !== 'get_world_infos_batch') throw new Error('nope');
+          return { world_infos: Object.keys(WORLDBOOKS).map((n) => ({ name: n, file_id: n })) };
+        },
+      },
+    };
+  }, 20);
+
+  const d = createMiniDocument();
+  useDoc(d);
+  resetTavernState();
+  const app = mainMod.createApp({ storage: d.defaultView.localStorage, doc: d, win: d.defaultView });
+  app.init();
+
+  // 等自动重试跑起来
+  await new Promise((r) => setTimeout(r, 900));
+  const found = app.listAllWorldbooks();
+  eq(found.length, 3, `自动重试后应当拿到 3 本，实际 ${JSON.stringify(found)}`);
+  ok(ready > 0, 'IPC 应当是在启动之后才就绪的（才说明重试起作用了）');
+
+  app.destroy();
+  globalThis.__TAURI__ = savedTauri;
+  globalThis.fetch = savedFetch;
+  mockContext.worldInfoList = savedList;
+  st.clearTauriIpcCache();
+  await st.refreshWorldbookNames(true);
+});
+
+await test('拿不到清单时，"IPC 不可用"的缓存会被自动清掉（自愈）', async () => {
+  const savedTauri = globalThis.__TAURI__;
+  const savedList = mockContext.worldInfoList;
+  const savedFetch = globalThis.fetch;
+  delete mockContext.worldInfoList;
+  delete globalThis.__TAURI__;
+  delete globalThis.window.__TAURI__;
+  globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => null, text: async () => '' });
+  st.clearTauriIpcCache();
+
+  // 第一次：确认不可用（会被缓存成 false）
+  let res = await st.fetchWorldbookListViaTauri();
+  eq(res.entries.length, 0);
+  eq(st.tauriIpcInfo().includes('❌'), true);
+
+  // 之后 IPC 才出现，再走一次完整刷新
+  globalThis.window.__TAURI__ = { core: { invoke: async () => [{ name: '迟到的书' }] } };
+  const books = await st.refreshWorldbookNames(true);
+  eq(books.length, 1, `自动清缓存后应当能拿到，实际 ${JSON.stringify(books)}`);
+  eq(books[0].name, '迟到的书');
+
+  globalThis.__TAURI__ = savedTauri;
+  globalThis.fetch = savedFetch;
+  mockContext.worldInfoList = savedList;
+  st.clearTauriIpcCache();
+  await st.refreshWorldbookNames(true);
+});
+
+await test('悬浮层速度可以单独调（不再共用弹幕框速度）', () => {
+  const d2 = useDoc(createMiniDocument());
+  const ov = doc2overlay();
+  ov.ensureOverlay(d2);
+  const root = d2.getElementById('std-overlay');
+
+  ov.applyOverlayStyle(d2, { speed: 200, overlaySpeed: 60, fontSize: 15, overlayOpacity: 0.5 });
+  eq(root.style.getPropertyValue('--std-ov-speed'), '60px/s', '应当用悬浮层自己的速度');
+  eq(ov.overlaySpeedOf({ speed: 200, overlaySpeed: 60 }), 60);
+
+  // 没单独设时退回弹幕框速度，不能变成 undefined
+  eq(ov.overlaySpeedOf({ speed: 150 }), 150);
+  eq(ov.overlaySpeedOf({}), 110);
+  eq(ov.overlaySpeedOf({ speed: 150, overlaySpeed: 0 }), 150, '0 应当被视为没设');
+
+  // 播放时的时长要跟着变：快 → 短
+  const slow = ov.playOverlay(d2, [{ 昵称: '甲', 内容: 'x', color: '#fff' }], { appearance: { overlaySpeed: 40, fontSize: 15 } });
+  const fast = ov.playOverlay(d2, [{ 昵称: '甲', 内容: 'x', color: '#fff' }], { appearance: { overlaySpeed: 400, fontSize: 15 } });
+  ok(slow.duration > fast.duration, `慢的时长应当更长：${slow.duration} vs ${fast.duration}`);
+  ov.stopOverlay(d2);
+});
+
+await test('「选择世界书」按钮会刷新列表并把结果说出来', async () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  ok(el, '设置栏应当挂上');
+
+  const btn = el.querySelector('[data-std-dw-act="books-pick"]');
+  ok(btn, '应当有「选择世界书」按钮');
+  eq(btn.textContent.trim(), '选择世界书', '按钮名字应当直白');
+  ok(!el.querySelector('[data-std-dw-act="books-reload"]'), '旧的「重新查找」按钮应当已被取代');
+
+  btn.dispatch('click', { target: btn });
+  await new Promise((r) => setTimeout(r, 120));
+  const result = el.querySelector('[data-std-dw-result]').textContent;
+  ok(/共 \d+ 本|没读到/.test(result), `应当报告结果：${result}`);
+  app.destroy();
+});
+
+await test('排查明细默认折叠，点「排查」才展开', async () => {
+  const { d, app } = makeDrawerEnv();
+  const drawer = drawerMod.createDrawer(app, { doc: d });
+  const el = drawer.mount();
+  eq(el.querySelectorAll('[data-std-dw-diag] details').length, 0, '默认不该有展开的技术明细');
+
+  const btn = el.querySelector('[data-std-dw-act="books-diag"]');
+  ok(btn, '应当保留一个不那么显眼的排查入口');
+  btn.dispatch('click', { target: btn });
+  await new Promise((r) => setTimeout(r, 150));
+  const details = el.querySelector('[data-std-dw-diag] details');
+  ok(details, '点完之后应当出现可折叠的明细');
+  ok(/loadWorldInfo|最终清单/.test(details.textContent), '明细里应当有各条途径的结果');
+  app.destroy();
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

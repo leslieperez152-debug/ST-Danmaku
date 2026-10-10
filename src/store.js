@@ -98,7 +98,8 @@ export function defaultSettings() {
       frameBackground: 'linear-gradient(100deg, #2b3a67 0%, #3f5b8b 38%, #6d4f8f 68%, #8f5f7a 100%)',
       frameBgTouched: false, // 用户是否手动改过弹幕框背景（改过就不再用"按主题取样"覆盖）
       frameHeight: 148,
-      speed: 110, // px/s
+      speed: 110, // px/s（弹幕框的飞行速度）
+      overlaySpeed: 90, // px/s（悬浮层的飞行速度，单独可调：悬空看和贴在楼层里观感不同）
       fontSize: 15,
       gap: 16, // 同轨最小间隔 px
       opacity: 1,
@@ -233,6 +234,7 @@ export function normalizeSettings(s) {
   out.injection.sampleCount = num(out.injection.sampleCount, 4, 0, 12);
 
   out.appearance.speed = num(out.appearance.speed, 110, 20, 900);
+  out.appearance.overlaySpeed = num(out.appearance.overlaySpeed, 90, 20, 900);
   out.appearance.fontSize = num(out.appearance.fontSize, 15, 8, 48);
   out.appearance.frameHeight = num(out.appearance.frameHeight, 148, 48, 600);
   out.appearance.gap = num(out.appearance.gap, 16, 0, 200);

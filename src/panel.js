@@ -182,6 +182,7 @@ function pages(app) {
           kv('本次会读', src.names.length ? src.names.join('、') : '（一本都没选）'),
           `<div class="std-books">${rows}</div>`,
           btnRow([
+            { label: '选择世界书', act: 'books-pick', primary: true },
             { label: '勾选全部世界书', act: 'books-all' },
             { label: '全不选', act: 'books-none' },
             { label: '恢复自动跟随', act: 'books-auto' },
@@ -258,10 +259,11 @@ function pages(app) {
         return [
           '<div class="std-sec">楼层弹幕框</div>',
           row2('启用', toggle('appearance.frameEnabled', a.frameEnabled, '挂在每轮正文下面的一块幕布')),
-          row2('背景', colorPicker(a.frameBackground), '点色块挑预设，或直接改下面的文本框（支持颜色和渐变）'),          row2('背景（自由填写）', text('appearance.frameBackground', a.frameBackground, 'CSS 颜色或渐变')),
+          row2('背景', colorPicker(a.frameBackground), '点色块挑预设，或直接改下面的文本框（支持颜色和渐变）'),
+          row2('背景（自由填写）', text('appearance.frameBackground', a.frameBackground, 'CSS 颜色或渐变')),
           row2('高度（px）', number('appearance.frameHeight', a.frameHeight, 48, 600, 4)),
           row2('字号（px）', number('appearance.fontSize', a.fontSize, 8, 48, 1)),
-          row2('速度（px/秒）', number('appearance.speed', a.speed, 20, 900, 5), '越大飞得越快'),
+          row2('速度（px/秒）', number('appearance.speed', a.speed, 20, 900, 5), '越大飞得越快（只影响楼层里的弹幕框）'),
           row2('同轨间隔（px）', number('appearance.gap', a.gap, 0, 200, 1)),
           row2('整块不透明度', range('appearance.opacity', a.opacity, 0.1, 1, 0.05), '整块弹幕框（含幕布与文字）一起变'),
           row2('显示轨道序号', toggle('appearance.showMeta', a.showMeta)),
@@ -275,6 +277,11 @@ function pages(app) {
             '这一项改的是整个悬浮层（标题栏 + 弹幕）的透明度；拖动和悬停都不会覆盖它',
           ),
           row2(
+            '速度（px/秒）',
+            number('appearance.overlaySpeed', a.overlaySpeed, 20, 900, 5),
+            '悬浮层单独的速度。它悬在半空，比贴在地层里的弹幕慢一点更好读',
+          ),
+          row2(
             '背景色',
             colorPicker(a.overlayBg, OVERLAY_BG_PRESETS, '预览：悬浮层背景', 'overlay'),
             '悬浮层是盖在正文上的，所以这些预设都带透明度；它会和上面的"整层不透明度"叠乘',
@@ -282,11 +289,11 @@ function pages(app) {
           row2('背景（自由填写）', text('appearance.overlayBg', a.overlayBg, 'CSS 颜色或渐变，如 rgba(0,0,0,.4)')),
           row2('播完自动淡出', toggle('appearance.overlayFade', a.overlayFade, '每批播完后整层淡下去，不挡着看正文')),
           btnRow([
+            { label: '预览速度（用示例弹幕）', act: 'demo', primary: true },
             { label: '按当前主题取个色', act: 'sample-frame-bg' },
             { label: '重置悬浮层位置', act: 'reset-overlay-rect' },
-            { label: '本地预览一批', act: 'demo' },
           ]),
-          '<div class="std-hint">悬浮层平时鼠标可以穿透，不挡你点聊天；标题栏和右下角手柄才收鼠标事件，所以拖动/拉伸不受透明度影响。位置和大小会被记住。</div>',
+          '<div class="std-hint">改完速度点「预览速度」立刻能看出快慢，不用等下一批真实弹幕。悬浮层平时鼠标可以穿透，不挡你点聊天；标题栏和右下角手柄才收鼠标事件。</div>',
         ].join('');
       },
     },
@@ -709,6 +716,20 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
         app.updateSettings({ scan: { sources: null } });
         render();
         break;
+      case 'books-pick': {
+        btn.disabled = true;
+        setResult('std-api-result', '⏳ 正在读取世界书列表…');
+        const list = await app.reloadWorldbooks();
+        setResult(
+          'std-api-result',
+          list.length
+            ? `✅ 共 ${list.length} 本，上面的列表可以勾选了：${list.slice(0, 6).map((b) => b.name).join('、')}${list.length > 6 ? ' …' : ''}`
+            : '⚠️ 还是没读到世界书。到扩展面板那一栏点「排查」看哪条路断了。',
+        );
+        btn.disabled = false;
+        render();
+        break;
+      }
       case 'books-all':
         app.updateSettings({ scan: { sources: app.listAllWorldbooks() } });
         render();

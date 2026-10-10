@@ -1026,6 +1026,40 @@ textarea.std-input {
   margin: 6px 0;
 }
 
+/* 排查明细：默认折叠，不打扰正常使用 */
+.std-dw-diag {
+  margin-top: 4px;
+}
+
+.std-dw-diag details {
+  font-size: 11.5px;
+  opacity: 0.8;
+}
+
+.std-dw-diag summary {
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.std-dw-diag pre {
+  margin: 5px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.55;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.std-dw-tiny {
+  font-size: 11px !important;
+  opacity: 0.75;
+  padding: 2px 8px !important;
+}
+
 .std-dw-primary {
   background: rgba(90, 140, 255, 0.28) !important;
   border-color: rgba(160, 200, 255, 0.5) !important;

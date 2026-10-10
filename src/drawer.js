@@ -20,6 +20,8 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
   let rootEl = null;
   let offFns = [];
   let scanPhase = null; // 扫描进行中的阶段（null = 没在扫）
+  let diagText = ''; // 「排查」的技术明细（默认折叠，不打扰普通使用）
+  let diagOpen = false;
 
   const esc = (s) =>
     String(s ?? '')
@@ -83,12 +85,12 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
           <div class="std-dw-sec">世界书</div>
           <div class="std-dw-mode" data-std-dw-mode></div>
           <div class="std-dw-books" data-std-dw-books></div>
-          <div class="std-dw-subbtns">
-            <div class="menu_button std-dw-btn" data-std-dw-act="books-reload">重新查找</div>
+          <div class="std-dw-btns">
+            <div class="menu_button std-dw-btn std-dw-primary" data-std-dw-act="books-pick">选择世界书</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="books-all">勾选全部</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="books-none">全不选</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="books-auto">恢复自动跟随</div>
-            <div class="menu_button std-dw-btn" data-std-dw-act="books-diag">诊断</div>
+            <div class="menu_button std-dw-btn std-dw-tiny" data-std-dw-act="books-diag" title="看不到世界书时点这里排查">排查</div>
           </div>
           <label class="std-dw-check"><input type="checkbox" data-std-dw="scan.followCard"><span>换卡时自动跟随该卡绑定的世界书</span></label>
           <div class="std-dw-btns">
@@ -99,6 +101,7 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
           <div class="std-dw-applied" data-std-dw-applied></div>
 
           <div class="std-dw-result" data-std-dw-result></div>
+          <div class="std-dw-diag" data-std-dw-diag></div>
           <div class="std-dw-tip">弹幕是独立请求，不占正文 token。勾选可以多选，勾哪本就扫描哪几本。外观 / 连接 / 观众 / 风格这些在「打开完整设置」里。</div>
         </div>
       </div>
@@ -258,18 +261,23 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
       render();
     }
 
-    if (act === 'books-reload') {
-      setResult('⏳ 正在重新查找世界书…');
+    if (act === 'books-pick') {
+      // 这个按钮的名字就是它的作用：把世界书列出来让你勾选。
+      // 顺手强制刷新一次 —— 万一初次加载时 Tauri IPC 还没就绪，这一次就能补上。
+      setResult('⏳ 正在读取世界书列表…');
       const list = await app.reloadWorldbooks();
-      setResult(list.length ? `✅ 找到 ${list.length} 本：${list.slice(0, 6).map((b) => b.name).join('、')}` : '⚠️ 还是没找到。点「诊断」看看哪条路通。');
+      setResult(
+        list.length
+          ? `✅ 共 ${list.length} 本，可以在上面勾选了：${list.slice(0, 6).map((b) => b.name).join('、')}${list.length > 6 ? ' …' : ''}`
+          : '⚠️ 还是没读到。点右边的「排查」看看哪条路断了。',
+      );
       render();
       return;
     }
     if (act === 'books-diag') {
-      setResult('⏳ 正在逐条诊断…');
       const rows = await app.diagnoseBooks();
-      const text = rows.map((r) => `${r.label}：${r.outcome}`).join('\n');
-      setResult(text);
+      diagText = rows.map((r) => `${r.label}：${r.outcome}`).join('\n');
+      diagOpen = true;
       render();
       return;
     }
@@ -325,6 +333,7 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
     renderBookList();
     renderScanFeedback();
+    renderDiag();
     renderStatus();
   }
 
@@ -382,6 +391,23 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
         }><span>${esc(n)}</span>${src.cardBooks.includes(n) ? '<i class="std-dw-tag">本卡</i>' : ''}</label>`;
       })
       .join('');
+  }
+
+  /** 「排查」的技术明细：默认折叠，只有真正看不到世界书时才需要看 */
+  function renderDiag() {
+    const el = rootEl.querySelector('[data-std-dw-diag]');
+    if (!el) return;
+    if (!diagText) {
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML = `<details${diagOpen ? ' open' : ''}><summary>读取途径的详细结果（排查用）</summary><pre>${esc(diagText)}</pre></details>`;
+    const details = el.querySelector('details');
+    if (details) {
+      details.addEventListener('toggle', () => {
+        diagOpen = details.open;
+      });
+    }
   }
 
   function renderStatus() {

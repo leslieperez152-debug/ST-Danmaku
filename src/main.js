@@ -110,6 +110,11 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     state.profile = loadCurrentProfile();
     state.cardSig = cardSignature();
 
+    // 世界书清单要主动去问酒馆（getContext 不暴露这个数组）。
+    // 注意：Tauri IPC 有可能在扩展刚加载时还没就绪，所以失败要**重试几次** ——
+    // 不能因为第一次问不到就一直是空的（那样用户就得手动点一个按钮才出来）。
+    loadWorldbooksWithRetry();
+
     ensureOverlay(doc);
     applyOverlayStyle(doc, state.settings.appearance);
     // 先给一个默认矩形，避免用户还没拖过时层是 0×0 而看不见
@@ -573,6 +578,30 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       api.emit('busy', false);
       api.emit('scan', { phase: 'end', detail: '' });
     }
+  }
+
+  /**
+   * 加载世界书清单，拿不到就按退避重试几次。
+   *
+   * 为什么需要重试：TauriTavern 的世界书列表要走 Tauri IPC，而 IPC 有可能在
+   * 扩展脚本刚跑起来时还没挂上（`__TAURI__` 还没就绪）。实测后果就是
+   * "必须手动点一下某个按钮，世界书才出来" —— 那个按钮替我们重试了一次而已。
+   */
+  function loadWorldbooksWithRetry() {
+    const delays = [0, 400, 1200, 3000, 6000];
+    let i = 0;
+    const attempt = async () => {
+      // 每轮都清掉"IPC 不可用"的缓存，否则第一次的失败会被一直记住
+      clearTauriIpcCache();
+      const list = await refreshWorldbookNames(true).catch(() => []);
+      if (list.length) {
+        api.emit('books', list);
+        return;
+      }
+      i += 1;
+      if (i < delays.length) state.bookRetryTimer = setTimeout(attempt, delays[i]);
+    };
+    attempt();
   }
 
   /**
