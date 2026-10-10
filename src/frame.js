@@ -47,10 +47,13 @@ export function makePalette(count, luminance) {
  * @param {number} opts.luminance    背景相对亮度
  * @param {object} opts.meta         { batchNo, messageId, title }
  * @param {object[]} opts.items      [{ 昵称, 内容, 类型, color }]
+ * @param {(act:string)=>boolean|void} [opts.onAction] 标题栏按钮的统一入口（'replay' | 'generate'）
  * @returns {HTMLElement}
  */
-export function createFrame({ doc, appearance, luminance, meta, items }) {
+export function createFrame({ doc, appearance, luminance, meta, items, onAction }) {
   const app = appearance || {};
+  // 标题栏按钮的回调挂在 app 上，attachControls 从 appearance 里取（保持参数面不变）
+  if (typeof onAction === 'function') app.onAction = onAction;
   const fontSize = Number(app.fontSize) || 15;
   const lineHeight = Math.round(fontSize * 1.9);
   const height = Math.max(lineHeight + 46, Number(app.frameHeight) || 148);
@@ -106,7 +109,9 @@ export function createFrame({ doc, appearance, luminance, meta, items }) {
     if (titleText) b.title = titleText;
     return b;
   };
-  head.appendChild(mkBtn('↻', 'replay', '重播这一批'));
+  // 带文字的按钮：只画图标别人不知道那是什么
+  head.appendChild(mkBtn('↻ 重播', 'replay', '重播这一批（不重新请求模型）'));
+  head.appendChild(mkBtn('＋ 生成', 'generate', '按当前正文再出一批新弹幕'));
   head.appendChild(mkBtn('✕', 'hide', '收起来（内容还在，点标题展开）'));
   root.appendChild(head);
 
@@ -175,7 +180,12 @@ function buildNode(doc, item, { lane, index, lineHeight, color, showName = true 
   return node;
 }
 
-/** 均摊到各轨道，同轨不相邻重复发送者 */
+/**
+ * 把 items 分摊到各轨道。
+ *
+ * 优先用**防重叠算法分配好的轨道**（`item.轨道`）—— 它算过"上一条的尾巴什么时候让开"，
+ * 所以同轨不会挤在一起。没有这个字段时才退回按序号均摊（并尽量避免同轨相邻重复发送者）。
+ */
 export function distributeLanes(items, lanes) {
   const count = Math.max(1, lanes);
   const out = [];
@@ -183,6 +193,12 @@ export function distributeLanes(items, lanes) {
   let lastSpeaker = '';
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
+    const preset = Number(item?.轨道);
+    if (Number.isFinite(preset)) {
+      out.push({ item, lane: ((preset % count) + count) % count, index: i });
+      lastSpeaker = item.昵称 || lastSpeaker;
+      continue;
+    }
     if (item.昵称 && item.昵称 === lastSpeaker && count > 1) lane = (lane + 1) % count;
     out.push({ item, lane, index: i });
     lastSpeaker = item.昵称 || '';
@@ -280,11 +296,20 @@ export function renderStatic(frame) {
 
 function attachControls(frame, doc, appearance) {
   frame.el.addEventListener('click', (ev) => {
+    // 按钮可能在某个子节点里（图标 / 文字 span），所以往上找最近的按钮
     const target = ev.target;
-    const act = target?.getAttribute?.('data-std-act');
+    const btn = target?.closest?.('[data-std-act]') || (target?.getAttribute?.('data-std-act') ? target : null);
+    const act = btn?.getAttribute?.('data-std-act');
     if (act === 'replay') {
       ev.stopPropagation();
+      // 优先交给宿主统一处理（它会更新记账与历史），没有就退回本地重播
+      if (typeof appearance?.onAction === 'function' && appearance.onAction('replay') !== false) return;
       playFrame(frame, { doc, appearance });
+      return;
+    }
+    if (act === 'generate') {
+      ev.stopPropagation();
+      if (typeof appearance?.onAction === 'function') appearance.onAction('generate');
       return;
     }
     if (act === 'hide') {
@@ -292,8 +317,8 @@ function attachControls(frame, doc, appearance) {
       toggleCollapse(frame, true);
       return;
     }
-    // 点标题栏也能展开/收起
-    if (target?.closest?.('.std-frame-head')) {
+    // 点标题栏也能展开/收起（但别把按钮点击当成展开）
+    if (!btn && target?.closest?.('.std-frame-head')) {
       toggleCollapse(frame, !frame.el.classList.contains('collapsed'));
     }
   });

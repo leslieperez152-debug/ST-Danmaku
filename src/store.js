@@ -117,6 +117,15 @@ export function defaultSettings() {
       overlaySpeed: 90, // px/s（悬浮层的飞行速度，单独可调：悬空看和贴在楼层里观感不同）
       speedVariance: 5, // 每条弹幕的速度在基准上下的浮动幅度（百分比，±5% 让它们不要整齐划一）
       delayVariance: 35, // 每条弹幕出现时刻的浮动幅度（百分比，让它们不要等间隔冒出来）
+      /**
+       * 防重叠：按"上一条的尾巴什么时候让开"来分轨道，保证同轨不挤在一起。
+       *
+       * 代价要知道：速度恒定时，一条 900px 宽的弹幕要飞近 2 秒尾巴才让开，
+       * 所以每条轨道最多约 1.5 秒收一条 —— 轨道数不多时会把弹幕摊得很稀、
+       * 并且把"间隔浮动"抹平（变成接近等间隔）。
+       * 喜欢密集刷屏感就把这个关掉，那时是允许叠一点的。
+       */
+      avoidOverlap: true,
       stagger: 0.22, // 基准间隔（秒）：等间隔时相邻两条的出现间隔；有浮动时作为基准
       fontSize: 15,
       gap: 16, // 同轨最小间隔 px
@@ -262,6 +271,7 @@ export function normalizeSettings(s) {
   out.appearance.speedVariance = num(out.appearance.speedVariance, 5, 0, 60);
   out.appearance.delayVariance = num(out.appearance.delayVariance, 35, 0, 100);
   out.appearance.stagger = num(out.appearance.stagger, 0.22, 0.02, 2);
+  out.appearance.avoidOverlap = asBool(out.appearance.avoidOverlap, true);
   out.appearance.fontSize = num(out.appearance.fontSize, 15, 8, 48);
   out.appearance.frameHeight = num(out.appearance.frameHeight, 148, 48, 600);
   out.appearance.gap = num(out.appearance.gap, 16, 0, 200);

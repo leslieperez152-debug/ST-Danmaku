@@ -46,7 +46,7 @@ import {
   toast,
 } from './st.js';
 import { scanWorldbooks, estimateScanCost } from './scan.js';
-import { generateBatch, buildViewerPool, buildStoryContext, pickGags, assignSpeeds, assignDelaysToItems } from './danmaku.js';
+import { generateBatch, buildViewerPool, buildStoryContext, pickGags, assignSpeeds, assignLanesAndDelays, assignDelaysToItems } from './danmaku.js';
 import { chat, chatJson, fetchModelList, fetchModelListDirect, resolveStTarget } from './llm.js';
 import { buildPalette, sampleBackgroundLuminance, sampleBackground, shade } from './color.js';
 import {
@@ -128,15 +128,19 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     // 先给一个默认矩形，避免用户还没拖过时层是 0×0 而看不见
     applyRect(doc, state.settings.appearance.overlayRect);
     showOverlay(doc, state.settings.appearance.overlayEnabled);
-    state.offOverlay = enableInteractions(doc, (rect) => {
-      if (rect === null) {
-        // 用户点了 ✕：把开关也一起关掉，避免界面与设置不一致
-        state.settings.appearance.overlayEnabled = false;
-      } else if (rect) {
-        state.settings.appearance.overlayRect = rect;
-      }
-      persistSettings();
-      api.emit('settings', state.settings);
+    state.offOverlay = enableInteractions(doc, {
+      onRect: (rect) => {
+        if (rect === null) {
+          // 用户点了 ✕：把开关也一起关掉，避免界面与设置不一致
+          state.settings.appearance.overlayEnabled = false;
+        } else if (rect) {
+          state.settings.appearance.overlayRect = rect;
+        }
+        persistSettings();
+        api.emit('settings', state.settings);
+      },
+      // 悬浮层标题栏上的「重播 / 生成」直接接到统一入口
+      onAction: (act) => handleQuickAction(act),
     });
 
     bindEvents();
@@ -348,8 +352,26 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       /* 每条弹幕定一个自己的飞行速度（在设定速度上浮动），
          定死在数据里而不是渲染时随机 —— 这样重播和静态列表的快慢都一致 */
       items = assignSpeeds(items, s.appearance.speed, s.appearance.speedVariance);
-      // 出现时刻也定死在数据里（同样为了重播一致）；基准间隔就是当前的 stagger
-      items = assignDelaysToItems(items, s.appearance.stagger, s.appearance.delayVariance);
+
+      /* 出现时刻 + 防重叠轨道分配：
+         速度恒定意味着"时间上挨得近"的两条会一直挨得近，所以同轨重叠只能靠分轨道解决。
+         关掉时退回纯随机浮动（更密、但允许叠一点）。 */
+      const lh = Math.max(10, Math.round((Number(s.appearance.fontSize) || 15) * 1.9));
+      const frameH = Math.max(lh + 46, Number(s.appearance.frameHeight) || 148);
+      const frameLanes = Math.max(1, Math.floor((frameH - 40) / lh));
+      if (s.appearance.avoidOverlap !== false) {
+        const stageWidth = Math.max(320, overlayStageWidth(doc) || frameStageWidth(doc) || 900);
+        items = assignLanesAndDelays(items, {
+          base: s.appearance.stagger,
+          jitterPct: s.appearance.delayVariance,
+          lanes: frameLanes,
+          speed: s.appearance.speed,
+          stageWidth,
+          gapPx: s.appearance.gap,
+        });
+      } else {
+        items = assignDelaysToItems(items, s.appearance.stagger, s.appearance.delayVariance);
+      }
 
       /* 记账 */
       const batchNo = ++state.runtime.batchNo;
@@ -445,6 +467,28 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
   }
 
   /** 把一批弹幕渲染到楼层框（以及可选的悬浮层） */
+  /** 悬浮层舞台宽度（还没铺开时给 0，让调用方退回别的估计） */
+  function overlayStageWidth(d) {
+    try {
+      const st = d.querySelector('#' + 'std-overlay .std-ov-stage') || d.querySelector('.std-ov-stage');
+      const w = st && typeof st.getBoundingClientRect === 'function' ? st.getBoundingClientRect().width : 0;
+      return w > 0 ? w : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** 弹幕框舞台宽度 */
+  function frameStageWidth(d) {
+    try {
+      const st = d.querySelector('.std-frame-stage');
+      const w = st && typeof st.getBoundingClientRect === 'function' ? st.getBoundingClientRect().width : 0;
+      return w > 0 ? w : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   function renderBatch(batch, { messageId, animate = true } = {}) {
     const s = state.settings;
     const app = s.appearance;
@@ -464,6 +508,8 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         luminance: state.luminance,
         meta: { batchNo: batch.batchNo, messageId: mid, title: batch.title },
         items: batch.items,
+        // 框上的「重播 / 生成」接到统一入口（这样记账与历史也会一起更新）
+        onAction: (act) => handleQuickAction(act, batch),
       });
       const mounted = mountFrame({ doc, messageId: mid, frame });
       if (mounted) {
@@ -492,12 +538,40 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
   function replayBatch(batchNo) {
     const batch = state.runtime.history.find((b) => b.batchNo === batchNo);
     if (!batch) return false;
-    if (state.settings.appearance.overlayEnabled) {
-      playOverlay(doc, batch.items, { appearance: state.settings.appearance });
-    }
+    // 只让 renderBatch 负责播放，别在这里再 playOverlay 一次 ——
+    // 那会让悬浮层连播两遍（同一批重叠着飞）。
     const mid = batch.anchorId;
     renderBatch(batch, { messageId: mid, animate: true });
     return true;
+  }
+
+  /**
+   * 弹幕框 / 悬浮层标题栏上两个按钮的统一入口。
+   *
+   * 有意的取舍：重播**总是重播最近一批**，而不是"重播这个框里那一批"。
+   * 因为悬浮层同时只会显示一批，如果框上重播的是自己那批、悬浮层重播的却是最近那批，
+   * 两处就会不同步 —— 看起来像 bug。统一成"最近一批"最不容易让人困惑。
+   *
+   * @param {'replay'|'generate'} act
+   * @param {object} [batch] 发起按钮所属的批次（仅用于生成时确定挂在哪一楼）
+   */
+  function handleQuickAction(act, batch) {
+    if (act === 'generate') {
+      const mid = batch?.anchorId ?? lastMessageId();
+      // 不 await：按钮点击不该让 UI 卡住，出错会通过 error 事件报出来
+      runBatch({ messageId: mid, manual: true }).then((res) => {
+        if (!res?.ok && res?.error) api.emit('error', res.error);
+      });
+      return true;
+    }
+    if (act === 'replay') {
+      const hist = state.runtime.history;
+      const last = hist[hist.length - 1];
+      if (!last) return false;
+      replayBatch(last.batchNo);
+      return true;
+    }
+    return false;
   }
 
   /* ───────────── 注入（唯一的"弹幕 → 正文"通道） ───────────── */

@@ -326,6 +326,11 @@ function pages(app) {
             number('appearance.delayVariance', a.delayVariance, 0, 100, 5),
             '出现时刻也随机前后浮动，像真人陆陆续续发出来。0 = 严格等间隔',
           ),
+          row2(
+            '防重叠',
+            toggle('appearance.avoidOverlap', a.avoidOverlap, '按"上一条的尾巴让开了没"分轨道，保证同轨不叠'),
+          ),
+          '<div class="std-hint">防重叠的<b>代价</b>要知道：速度恒定时，一条弹幕要飞近 2 秒尾巴才让开，所以每条轨道大约 1.5 秒才收得下一条。轨道少的时候，弹幕会被摊得很稀，而且<b>间隔浮动会被抹平成接近等间隔</b>。想要密集刷屏的观感就把「防重叠」关掉，那时允许叠一点。</div>',
           row2('同轨间隔（px）', number('appearance.gap', a.gap, 0, 200, 1)),
           row2('整块不透明度', range('appearance.opacity', a.opacity, 0.1, 1, 0.05), '整块弹幕框（含幕布与文字）一起变'),
           row2('显示轨道序号', toggle('appearance.showMeta', a.showMeta)),

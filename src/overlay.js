@@ -40,6 +40,19 @@ export function ensureOverlay(doc) {
   count.className = 'std-ov-count';
   bar.appendChild(count);
 
+  // 悬浮层自己的两个操作按钮：看弹幕的地方就能直接再要一批 / 重播
+  const mkOvBtn = (label, act, titleText) => {
+    const b = doc.createElement('button');
+    b.type = 'button';
+    b.className = 'std-ov-btn';
+    b.textContent = label;
+    b.title = titleText;
+    b.setAttribute('data-std-ov-act', act);
+    return b;
+  };
+  bar.appendChild(mkOvBtn('↻ 重播', 'replay', '重播最近一批（不重新请求模型）'));
+  bar.appendChild(mkOvBtn('＋ 生成', 'generate', '按当前正文再出一批新弹幕'));
+
   const hide = doc.createElement('button');
   hide.type = 'button';
   hide.className = 'std-ov-hide';
@@ -171,7 +184,9 @@ export function playOverlay(doc, items, opts = {}) {
   items.forEach((item, i) => {
     const node = doc.createElement('div');
     node.className = 'std-ov-item';
-    node.style.top = `${(i % lanes) * laneH}px`;
+    // 轨道：优先用防重叠算法分配好的（它保证了同轨不挤在一起），没有才按序号轮着来
+    const lane = Number.isFinite(Number(item?.轨道)) ? Number(item.轨道) % lanes : i % lanes;
+    node.style.top = `${lane * laneH}px`;
     node.style.color = item.color || '#fff';
     node.style.animationDuration = `${durationFor(item).toFixed(2)}s`;
     // 出现时刻：优先用每条自己定好的（带浮动），没有就退回等间隔
@@ -242,17 +257,22 @@ export function stopOverlay(doc) {
  * 整体透明度整个盖掉（这就是"调透明度没反应"的原因）。
  *
  * @param {Document} doc
- * @param {(rect:object|null)=>void} onCommit 拖动/缩放结束时回调；null 表示用户点了 ✕ 隐藏
+ * @param {((rect:object|null)=>void)|{onRect?:Function, onAction?:Function}} onCommitOrOpts
+ *        兼容旧写法：直接传函数等于 onRect。onRect(null) 表示用户点了 ✕ 隐藏。
+ *        onAction('replay'|'generate') 用于标题栏上的两个按钮。
  * @returns {() => void} 卸载函数
  */
-export function enableInteractions(doc, onCommit) {
+export function enableInteractions(doc, onCommitOrOpts) {
+  const opts = typeof onCommitOrOpts === 'function' ? { onRect: onCommitOrOpts } : onCommitOrOpts || {};
+  const onCommit = opts.onRect;
   const root = ensureOverlay(doc);
   const win = doc.defaultView || globalThis;
   const { bar, resizer } = root.__std;
   let drag = null;
 
   const begin = (ev, mode) => {
-    if (mode === 'move' && ev.target?.closest?.('[data-std-ov-hide]')) return;
+    // 标题栏上的按钮不是拖动把手
+    if (mode === 'move' && ev.target?.closest?.('[data-std-ov-hide], [data-std-ov-act]')) return;
     if (ev.button !== undefined && ev.button !== 0) return; // 只响应左键
     const r = root.getBoundingClientRect();
     drag = { mode, startX: ev.clientX, startY: ev.clientY, rect: { x: r.left, y: r.top, w: r.width, h: r.height } };
@@ -300,6 +320,13 @@ export function enableInteractions(doc, onCommit) {
   };
 
   const onHideClick = (ev) => {
+    // 标题栏上的两个操作按钮
+    const actBtn = ev.target?.closest?.('[data-std-ov-act]');
+    if (actBtn) {
+      const act = actBtn.getAttribute('data-std-ov-act');
+      if (typeof opts.onAction === 'function') opts.onAction(act);
+      return;
+    }
     if (!ev.target?.closest?.('[data-std-ov-hide]')) return;
     showOverlay(doc, false);
     stopOverlay(doc);

@@ -2882,6 +2882,114 @@ await test('延迟设置真的进了设置（stagger 不再是 undefined）', ()
   ok(bad.appearance.delayVariance <= 100, `delayVariance 应当被夹到 100，实际 ${bad.appearance.delayVariance}`);
 });
 
+/* ───────────── 防重叠：分轨道 ───────────── */
+
+section('13i. 防重叠（按轨道 + 碰撞检测）');
+
+function seeded(seed) {
+  let s = seed;
+  return () => {
+    s = (s * 1103515245 + 12345) % 2147483648;
+    return s / 2147483648;
+  };
+}
+
+/** 按参数算"同轨两条之间至少要隔多久"（与实现同一口径：向上取整到毫秒） */
+const needSec = (avgWidth, gapPx, speed) => Math.ceil(((avgWidth + gapPx) / speed) * 1000) / 1000;
+
+await test('防重叠：同轨任意两条之间都留够了"尾巴让开"的时间', () => {
+  const items = Array.from({ length: 20 }, (_, i) => ({ 内容: `第${i}条弹幕` }));
+  const speed = 110;
+  const gapPx = 16;
+  const out = danmaku.assignLanesAndDelays(items, {
+    base: 0.22,
+    jitterPct: 60,
+    lanes: 3,
+    speed,
+    stageWidth: 900,
+    gapPx,
+    rand: seeded(11),
+  });
+
+  eq(out.length, 20, '每条都要有结果');
+  const byLane = new Map();
+  for (const it of out) {
+    ok(Number.isFinite(it.延迟) && it.延迟 >= 0, `时刻必须是非负数：${it.延迟}`);
+    ok(Number.isInteger(it.轨道) && it.轨道 >= 0 && it.轨道 < 3, `轨道必须在 0~2 之间：${it.轨道}`);
+    if (!byLane.has(it.轨道)) byLane.set(it.轨道, []);
+    byLane.get(it.轨道).push(it.延迟);
+  }
+
+  // 默认平均宽度估 200px → 需要 (200+16)/110 ≈ 1.96s
+  const need = needSec(200, gapPx, speed);
+  for (const [lane, ts] of byLane) {
+    ts.sort((a, b) => a - b);
+    for (let i = 1; i < ts.length; i += 1) {
+      const gap = ts[i] - ts[i - 1];
+      ok(gap >= need - 1e-6, `轨道 ${lane} 上有两条挨太近（会重叠）：${gap.toFixed(3)}s < ${need.toFixed(3)}s`);
+    }
+  }
+});
+
+await test('防重叠：轨道数越多，弹幕摊得越开（不会挤在一条上）', () => {
+  const items = Array.from({ length: 12 }, (_, i) => ({ 内容: `x${i}` }));
+  const opts = { base: 0.22, jitterPct: 40, speed: 110, stageWidth: 900, gapPx: 16, rand: seeded(5) };
+  const one = danmaku.assignLanesAndDelays(items, { ...opts, lanes: 1 });
+  const three = danmaku.assignLanesAndDelays(items, { ...opts, lanes: 3 });
+  const lastOf = (arr) => Math.max(...arr.map((x) => x.延迟));
+  ok(lastOf(one) > lastOf(three), `1 轨应当比 3 轨更晚收尾：${lastOf(one)} vs ${lastOf(three)}`);
+  eq(new Set(one.map((x) => x.轨道)).size, 1, '1 轨时全在轨道 0');
+  ok(new Set(three.map((x) => x.轨道)).size > 1, '3 轨时应当用到多条轨道');
+});
+
+await test('防重叠：时刻不会被顺延成负数，也不会越排越离谱', () => {
+  const items = Array.from({ length: 40 }, (_, i) => ({ 内容: `x${i}` }));
+  const out = danmaku.assignLanesAndDelays(items, {
+    base: 0.1,
+    jitterPct: 100,
+    lanes: 2,
+    speed: 400, // 飞得快 → 尾巴让开得快
+    stageWidth: 900,
+    gapPx: 16,
+    rand: seeded(9),
+  });
+  const times = out.map((x) => x.延迟);
+  ok(Math.min(...times) >= 0, `不该有负数时刻：${Math.min(...times)}`);
+  // 40 条、2 轨、速度 400 → 每条轨道约 (200+16)/400=0.54s 收一条 → 最晚约 20*0.54≈11s
+  ok(Math.max(...times) < 30, `不该越排越离谱：${Math.max(...times)}`);
+});
+
+await test('防重叠：边界输入不崩', () => {
+  eq(danmaku.assignLanesAndDelays([], { base: 0.2 }).length, 0);
+  const one = danmaku.assignLanesAndDelays([{ 内容: 'a' }], { base: 0.2, lanes: 0, speed: 0, stageWidth: 0 });
+  eq(one.length, 1);
+  eq(one[0].轨道, 0, '轨道数至少是 1');
+  ok(one[0].延迟 >= 0, '时刻不能是 NaN');
+});
+
+await test('弹幕框会采用算法分好的轨道（不再按序号均摊打架）', () => {
+  const items = [
+    { 昵称: '甲', 内容: 'a', 轨道: 2 },
+    { 昵称: '乙', 内容: 'b', 轨道: 2 },
+    { 昵称: '丙', 内容: 'c', 轨道: 0 },
+  ];
+  const laid = frameMod.distributeLanes(items, 3);
+  eq(laid.map((x) => x.lane).join(','), '2,2,0', '应当照用给定轨道');
+  // 轨道数少于给定值时取模，不能越界
+  const clamped = frameMod.distributeLanes([{ 轨道: 5 }, { 轨道: 7 }], 3);
+  eq(clamped.map((x) => x.lane).join(','), '2,1', '越界轨道应当取模');
+  // 没有轨道字段时退回均摊
+  const fallback = frameMod.distributeLanes([{ 昵称: '甲' }, { 昵称: '乙' }], 2);
+  eq(fallback.map((x) => x.lane).join(','), '0,1');
+});
+
+await test('「防重叠」是设置项，且有默认值', () => {
+  const s = store.defaultSettings();
+  eq(typeof s.appearance.avoidOverlap, 'boolean', '必须是布尔设置');
+  eq(s.appearance.avoidOverlap, true, '默认开着');
+  eq(store.normalizeSettings({ appearance: { avoidOverlap: false } }).appearance.avoidOverlap, false, '关掉要能生效');
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

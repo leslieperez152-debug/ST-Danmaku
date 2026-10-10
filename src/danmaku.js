@@ -499,6 +499,96 @@ export function buildStoryContext(messages, { rounds = 2, charBudget = 6000 } = 
 }
 
 /**
+ * 安排出现时刻 + 分配轨道，**保证同轨不重叠**。
+ *
+ * 为什么必须做碰撞检测：速度是恒定的（每条只在自己基准上浮一点点），
+ * 所以"时间上挨得近"的两条弹幕会**一直挨得近** —— 光随机时刻是治不了重叠的。
+ * 唯一可靠的办法是：算清楚前一条的尾巴什么时候让开，再决定这一条能不能进这条轨道。
+ *
+ * 算法（贪心 + 提前量）：
+ *   1. 先给每条一个带浮动的理想时刻（assignDelays）；
+ *   2. 按时刻排序，依次为每条挑一条**留有余量**的轨道：
+ *      该轨道上一条的尾端要让开 `gapPx` 才算可以进；
+ *   3. 首选"能让开的轨道中最早空出来的那条"，都让不开就选最快让开的，
+ *      并把这一条的时刻顺延到那个时刻（宁可晚一点出现，也不要叠在一起）。
+ *
+ * @param {object[]} items
+ * @param {object} opts
+ * @param {number} opts.base        基准间隔（秒）
+ * @param {number} opts.jitterPct   间隔浮动百分比
+ * @param {number} opts.lanes       可用轨道数
+ * @param {number} opts.speed       基准速度 px/s（用来算尾巴什么时候让开）
+ * @param {number} opts.stageWidth  舞台宽度 px
+ * @param {number} [opts.avgWidth]  每条弹幕的平均宽度 px（估的，没法精确测量）
+ * @param {number} [opts.gapPx]     同轨最小净间隔 px
+ * @param {()=>number} [opts.rand]
+ * @returns {object[]} 带 `延迟` 与 `轨道` 的新数组
+ */
+export function assignLanesAndDelays(items, opts = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const n = list.length;
+  if (!n) return [];
+  const base = Math.max(0, Number(opts.base) || 0.22);
+  const jitterPct = Math.max(0, Number(opts.jitterPct) || 0);
+  const lanes = Math.max(1, Math.floor(Number(opts.lanes) || 1));
+  const speed = Math.max(20, Number(opts.speed) || 110);
+  const stageWidth = Math.max(120, Number(opts.stageWidth) || 800);
+  const avgWidth = Math.max(24, Number(opts.avgWidth) || 200);
+  const gapPx = Math.max(0, opts.gapPx === undefined ? 26 : Number(opts.gapPx));
+  const rand = typeof opts.rand === 'function' ? opts.rand : Math.random;
+
+  // ① 理想时刻
+  const delays = assignDelays(n, base, jitterPct, rand);
+
+  // ② 按时刻排序后逐条安排（同刻的按原顺序）
+  const order = list.map((it, i) => ({ it, i, t: delays[i] })).sort((a, b) => a.t - b.t || a.i - b.i);
+
+  // 每条进入时占据的空间：它的宽度 + 想要的净间隔。
+  // 尾巴让开所需秒数 = 这个空间 / 速度。
+  const occupySec = (avgWidth + gapPx) / speed;
+  // 上一条彻底离开舞台所需秒数（之后它就不占了）
+  const clearSec = (stageWidth + avgWidth) / speed;
+
+  const laneFreeAt = new Array(lanes).fill(0); // 每条轨道下一次可进入的时刻
+  const out = new Array(n);
+
+  for (const entry of order) {
+    let t = entry.t;
+    // 找一条能立刻进的轨道：它的空闲时刻不晚于这一条的时刻
+    let pick = -1;
+    let bestFree = Infinity;
+    for (let l = 0; l < lanes; l += 1) {
+      if (laneFreeAt[l] <= t + 1e-6) {
+        pick = l;
+        break;
+      }
+      if (laneFreeAt[l] < bestFree) {
+        bestFree = laneFreeAt[l];
+        pick = l;
+      }
+    }
+    if (laneFreeAt[pick] > t) t = laneFreeAt[pick]; // 都让不开就顺延
+    // 先**向上**取整到毫秒，再用取整后的值记账 ——
+    // 内部记账与对外给出的值必须是同一个数，否则四舍五入/取整的误差
+    // 会让"尾巴让开"的约束在小数位上失效，同轨两条真的叠上。
+    t = Math.ceil(t * 1000) / 1000;
+
+    out[entry.i] = {
+      ...entry.it,
+      延迟: t,
+      轨道: pick,
+    };
+    // 这条占据轨道到 t + occupySec；如果它很快飞出舞台，之后就完全自由了
+    laneFreeAt[pick] = t + occupySec;
+    // 若某条轨道上的弹幕已经飞出去了，轨道就空出来（用"完全离开"兜底，避免越排越后）
+    for (let l = 0; l < lanes; l += 1) {
+      if (laneFreeAt[l] > 0 && laneFreeAt[l] - clearSec > t) laneFreeAt[l] = t;
+    }
+  }
+  return out;
+}
+
+/**
  * 给一批弹幕安排出现时刻（秒），带浮动。
  *
  * 真实弹幕不是等间隔出来的：有时挤在一起刷屏，有时空一下。
@@ -507,6 +597,9 @@ export function buildStoryContext(messages, { rounds = 2, charBudget = 6000 } = 
  * 两个约束必须守住，否则会看起来像掉帧或卡顿：
  *   · **不乱序** —— 后一条不早于前一条出现（用下界夹住）；
  *   · **不完全重叠** —— 相邻两条至少间隔 base 的一个小比例（默认 25%）。
+ *
+ * 注意：这只管"时刻别挨太近"，**真正的防重叠要靠 assignLanesAndDelays 分轨道**。
+ * 速度恒定意味着同时刻挨得近的两条会一直挨得近。
  *
  * @param {number} n           条数
  * @param {number} base        基准间隔（秒）
