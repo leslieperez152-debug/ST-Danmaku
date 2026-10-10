@@ -83,12 +83,14 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
           <div class="std-dw-sec">世界书</div>
           <div class="std-dw-mode" data-std-dw-mode></div>
           <div class="std-dw-books" data-std-dw-books></div>
-          <label class="std-dw-check"><input type="checkbox" data-std-dw="scan.followCard"><span>换卡时自动跟随该卡绑定的世界书</span></label>
           <div class="std-dw-subbtns">
+            <div class="menu_button std-dw-btn" data-std-dw-act="books-reload">重新查找</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="books-all">勾选全部</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="books-none">全不选</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="books-auto">恢复自动跟随</div>
+            <div class="menu_button std-dw-btn" data-std-dw-act="books-diag">诊断</div>
           </div>
+          <label class="std-dw-check"><input type="checkbox" data-std-dw="scan.followCard"><span>换卡时自动跟随该卡绑定的世界书</span></label>
           <div class="std-dw-btns">
             <div class="menu_button std-dw-btn std-dw-primary" data-std-dw-act="scan">扫描世界书</div>
             <div class="menu_button std-dw-btn" data-std-dw-act="viewers">生成观众名册</div>
@@ -248,13 +250,29 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
     if (act === 'scan') {
       setResult('⏳ 正在扫描世界书…');
       const res = await app.scan();
-      setResult(
-        res.ok
-          ? `✅ 档案完成：读 ${res.profile.stats.entriesRead} 条 / ${res.profile.stats.charsRead} 字 → 总结 ${res.profile.stats.summaryChars} 字`
-          : `❌ ${res.error}`,
-      );      render();
+      let msg = res.ok
+        ? `✅ 档案完成：读 ${res.profile.stats.entriesRead} 条 / ${res.profile.stats.charsRead} 字 → 总结 ${res.profile.stats.summaryChars} 字`
+        : `❌ ${res.error}`;
+      if (res.ok && res.note) msg += `\nℹ️ ${res.note}`;
+      setResult(msg);
+      render();
     }
 
+    if (act === 'books-reload') {
+      setResult('⏳ 正在重新查找世界书…');
+      const list = await app.reloadWorldbooks();
+      setResult(list.length ? `✅ 找到 ${list.length} 本：${list.slice(0, 6).map((b) => b.name).join('、')}` : '⚠️ 还是没找到。点「诊断」看看哪条路通。');
+      render();
+      return;
+    }
+    if (act === 'books-diag') {
+      setResult('⏳ 正在逐条诊断…');
+      const rows = await app.diagnoseBooks();
+      const text = rows.map((r) => `${r.label}：${r.outcome}`).join('\n');
+      setResult(text);
+      render();
+      return;
+    }
     if (act === 'books-all') {
       app.updateSettings({ scan: { sources: app.listAllWorldbooks() } });
       render();

@@ -69,7 +69,12 @@ export function defaultSettings() {
       model: '', // 留空 = 用酒馆当前模型 / 直连必须填
       temperature: 1.05, // 弹幕需要发散，默认比正文高
       maxTokens: 2000,
-      useJsonSchema: true, // 支持的话用结构化输出，更稳
+      // 结构化输出默认关：兼容性远比"成功率"重要。
+      // 很多第三方 OpenAI 兼容端点（尤其转 Gemini 的）不支持 response_format，
+      // 带了就直接 400「Invalid data: Request contains an invalid argument」，
+      // 而且不会降级。实测踩过这个坑，所以默认不冒险。
+      // 想开就在「连接」页打开，失败时也会自动降级重试。
+      useJsonSchema: false,
       timeoutMs: 120000,
 
       direct: {
@@ -212,7 +217,7 @@ export function normalizeSettings(s) {
   out.api.temperature = num(out.api.temperature, 1.05, 0, 2);
   out.api.maxTokens = num(out.api.maxTokens, 2000, 64, 32000);
   out.api.timeoutMs = num(out.api.timeoutMs, 120000, 5000, 600000);
-  out.api.useJsonSchema = asBool(out.api.useJsonSchema, true);
+  out.api.useJsonSchema = asBool(out.api.useJsonSchema, false);
   out.api.model = String(out.api.model || '');
   out.api.source = String(out.api.source || 'custom');
   out.api.proxyPreset = String(out.api.proxyPreset || '');

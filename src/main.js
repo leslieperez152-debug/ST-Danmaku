@@ -34,7 +34,9 @@ import {
   getRecentStory,
   resolveWorldbookNames,
   listWorldbookNames,
+  listWorldbookEntries,
   refreshWorldbookNames,
+  diagnoseWorldbookSources,
   getBoundWorldbooks,
   getCurrentConnection,
   setLiveInjection,
@@ -564,7 +566,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       if (state.settings.liveMode) refreshInjection();
       persistRuntime();
       api.emit('profile', res.profile);
-      return { ok: true, profile: res.profile };
+      return { ok: true, profile: res.profile, note: res.note || '' };
     } finally {
       state.busy = false;
       api.emit('busy', false);
@@ -732,6 +734,20 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
     /** 面板用：所有可用世界书名 */
     listAllWorldbooks() {
       return listWorldbookNames();
+    },
+    /** 面板用：强制刷新世界书清单（用户手动点"重新查找"时用） */
+    async reloadWorldbooks() {
+      const list = await refreshWorldbookNames(true);
+      api.emit('books', list);
+      return list;
+    },
+    /** 面板用：把每一条获取途径都试一遍，报告结果（客户端上拿不到控制台时用） */
+    async diagnoseBooks() {
+      const rows = await diagnoseWorldbookSources();
+      // 诊断顺便把清单刷出来
+      await refreshWorldbookNames(true);
+      api.emit('books', listWorldbookEntries());
+      return rows;
     },
     /** 面板用：说清当前到底会读哪些世界书、是不是在跟随当前卡 */
     describeWorldbookSource() {

@@ -1763,6 +1763,127 @@ await test('悬浮层背景色块能改设置，且不会误改弹幕框背景',
   app.destroy();
 });
 
+await test('【真实场景】端点不支持结构化输出时，自动去掉它重试并成功', async () => {
+  // 复刻用户实际遇到的报错：第三方 OpenAI 兼容端点（转 Gemini）拒绝 response_format
+  resetMockConnection();
+  lastRequestBody = null;
+  const responses = [
+    { __http: 400, body: '[API 错误] Invalid data: Request contains an invalid argument.' },
+    { choices: [{ message: { content: '{"弹幕":[{"昵称":"甲","内容":"来了","类型":"普通","回复":""}]}' } }] },
+  ];
+  let call = 0;
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    lastRequestBody = init?.body ? JSON.parse(init.body) : null;
+    lastFetchUrl = String(url);
+    const next = responses[Math.min(call++, responses.length - 1)];
+    if (next.__http) return { ok: false, status: next.__http, text: async () => next.body, json: async () => ({}) };
+    const body = JSON.stringify(next);
+    return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+  };
+
+  const api = { ...store.loadSettings(storage, {}).api, useJsonSchema: true };
+  const schema = { name: 'x', value: { type: 'object', properties: { 弹幕: { type: 'array', items: {} } }, required: ['弹幕'] } };
+  const res = await llm.chatJson({ api, system: 's', user: 'u', label: '弹幕生成', jsonSchema: schema });
+
+  ok(res.ok, `应当自动降级后成功：${res.error}`);
+  eq(res.schemaFallback, true, '应当标记走过降级');
+  eq(call, 2, '应当正好重试一次');
+  eq(res.value.弹幕.length, 1, '降级后仍应解析出结果');
+  ok(!lastRequestBody.json_schema, '重试时不应该再带结构化输出');
+  ok(res.note && /结构化输出/.test(res.note), '应当给出人话说明');
+
+  globalThis.fetch = savedFetch;
+  resetMockConnection();
+});
+
+await test('判定：哪些报错算"不支持结构化输出"', () => {
+  // 用户日志里的原文
+  eq(llm.isSchemaRejection('[API 错误] Invalid data: Request contains an invalid argument.'), true);
+  eq(llm.isSchemaRejection('response_format is not supported'), true);
+  eq(llm.isSchemaRejection('unknown field json_schema'), true);
+  eq(llm.isSchemaRejection('api key invalid'), false);
+  eq(llm.isSchemaRejection('当前用的是「自定义端点（custom）」但酒馆里没配这个地址'), false);
+});
+
+await test('不支持结构化输出但降级后仍失败时，两条错误都给出来', async () => {
+  resetMockConnection();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => 'Invalid data: bad argument', json: async () => ({}) });
+  const api = { ...store.loadSettings(storage, {}).api, useJsonSchema: true };
+  const res = await llm.chatJson({ api, system: 's', user: 'u', label: 't', jsonSchema: { name: 'x', value: {} } });
+  eq(res.ok, false);
+  ok(/重试/.test(res.error), `应当说明已重试过：${res.error}`);
+  globalThis.fetch = savedFetch;
+  resetMockConnection();
+});
+
+await test('默认不再使用结构化输出（避免撞上不兼容的端点）', () => {
+  const s = store.defaultSettings();
+  eq(s.api.useJsonSchema, false, '默认应当是关的');
+  eq(store.normalizeSettings({}).api.useJsonSchema, false);
+});
+
+await test('【TauriTavern 场景】列表接口和 ctx 都拿不到时，从角色卡绑定收集', async () => {
+  const savedFetch = globalThis.fetch;
+  const savedList = mockContext.worldInfoList;
+  const savedChars = mockContext.characters;
+  const savedLoad = mockContext.loadWorldInfo;
+  // 断掉所有"列目录"的途径
+  globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => null, text: async () => '' });
+  delete mockContext.worldInfoList;
+
+  // 造 3 张卡，分别绑了不同的世界书，其中一本是不存在的（用来验证会过滤）
+  mockContext.characters = [
+    { name: '甲卡', data: { extensions: { world: '大书' } } },
+    { name: '乙卡', data: { extensions: { world: '小书' } } },
+    { name: '丙卡', data: { extensions: { world: '并不存在的书' } } },
+  ];
+  // loadWorldInfo 只认识真书，用来验证"试读过滤"
+  mockContext.loadWorldInfo = async (key) => {
+    if (key in WORLDBOOKS) return WORLDBOOKS[key];
+    throw new Error('not found');
+  };
+
+  const books = await st.refreshWorldbookNames(true);
+  const names = books.map((b) => b.name).sort();
+  eq(names.length, 2, `应当收集到 2 本真实存在的书，实际 ${JSON.stringify(names)}`);
+  eq(names.join(','), '大书,小书'.split(',').sort().join(','));
+  ok(!names.includes('并不存在的书'), '读不出来的名字应当被过滤掉');
+
+  globalThis.fetch = savedFetch;
+  mockContext.worldInfoList = savedList;
+  mockContext.characters = savedChars;
+  mockContext.loadWorldInfo = savedLoad;
+  await st.refreshWorldbookNames(true);
+});
+
+await test('诊断会逐条报告每条途径的结果', async () => {
+  const rows = await st.diagnoseWorldbookSources();
+  ok(Array.isArray(rows) && rows.length >= 6, `诊断应当有多条结果，实际 ${rows?.length}`);
+  const labels = rows.map((r) => r.label).join(' | ');
+  ok(/loadWorldInfo/.test(labels), '应当报告 loadWorldInfo 是否可用');
+  ok(/api\/worldinfo\/list/.test(labels), '应当报告接口那条路');
+  ok(/角色卡/.test(labels), '应当报告从卡收集那条路');
+  ok(/最终清单/.test(labels), '应当报告最终结果');
+  for (const r of rows) {
+    ok(typeof r.outcome === 'string' && r.outcome.length > 0, `${r.label} 缺少结论`);
+  }
+});
+
+await test('从角色卡收集：兼容卡自带世界书与附加世界书', () => {
+  const savedChars = mockContext.characters;
+  mockContext.characters = [
+    { name: 'A', data: { extensions: { world: '主书', world_info: ['附加1', '附加2'] } } },
+    { name: 'B', data: { character_book: { name: '内嵌书' } } },
+    { name: 'C', data: { extensions: { world: '主书' } } }, // 重复的应当去重
+  ];
+  const got = st.collectWorldbooksFromCharacters().map((b) => b.name);
+  ok(got.includes('主书') && got.includes('附加1') && got.includes('附加2') && got.includes('内嵌书'), got.join(','));
+  eq(got.filter((n) => n === '主书').length, 1, '重复的应当去重');
+  mockContext.characters = savedChars;
+});
+
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
 
 await test('每轮直出：一轮一条请求；关掉自动就不请求', async () => {

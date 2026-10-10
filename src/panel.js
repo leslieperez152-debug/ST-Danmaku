@@ -669,7 +669,9 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
         btn.disabled = true;
         setResult('std-scan-log', '⏳ 正在扫描…');
         const res = await app.scan();
-        setResult('std-scan-log', res.ok ? `✅ 档案完成：${res.profile.stats.summaryChars} 字` : `❌ ${res.error}`);
+        let msg = res.ok ? `✅ 档案完成：${res.profile.stats.summaryChars} 字` : `❌ ${res.error}`;
+        if (res.ok && res.note) msg += `\nℹ️ ${res.note}`;
+        setResult('std-scan-log', msg);
         btn.disabled = false;
         render();
         break;

@@ -302,6 +302,7 @@ export async function scanWorldbooks(input) {
   if (!res.ok || !res.value || typeof res.value !== 'object') {
     return { ok: false, profile, error: res.error || '总结失败：模型没有返回可用的档案' };
   }
+  if (res.schemaFallback && res.note) log(res.note, 'warn');
 
   const data = { ...blankProfileData() };
   for (const k of Object.keys(data)) {
@@ -333,7 +334,7 @@ export async function scanWorldbooks(input) {
 
   progress({ phase: 'done', detail: `档案完成：${total} 字` });
   log(`档案完成：${total} 字（上限 ${summaryBudget} 字）`);
-  return { ok: true, profile, error: '' };
+  return { ok: true, profile, error: '', note: res.note || '' };
 }
 
 /**

@@ -236,6 +236,139 @@ async function fetchWorldbookListViaApi() {
 }
 
 /**
+ * 从所有角色卡的绑定里收集世界书名。
+ *
+ * 为什么需要这一路：某些客户端（TauriTavern）的原生界面用 IPC 调后端取世界书列表，
+ * 前端不一定有 `/api/worldinfo/list` 这个 HTTP 路由，`world_names` 也拿不到。
+ * 但"卡绑定了哪本世界书"是**确实能读到**的（进一张卡就能看到它的绑定），
+ * 所以从卡上收集是一个不依赖任何接口的兜底。
+ */
+export function collectWorldbooksFromCharacters() {
+  const ctx = getCtx();
+  const out = [];
+  const push = (n) => {
+    const name = String(n || '').trim();
+    if (name && !out.some((x) => x.name === name)) out.push({ name, fileId: name });
+  };
+  try {
+    const chars = ctx?.characters || ctx?.getCharacters?.();
+    const list = Array.isArray(chars) ? chars : Object.values(chars || {});
+    for (const ch of list) {
+      if (!ch || typeof ch !== 'object') continue;
+      // 卡绑定的主世界书
+      push(ch?.data?.extensions?.world);
+      // 卡自带的世界书（内嵌 character_book）
+      push(ch?.data?.character_book?.name);
+      push(ch?.world);
+      // 有些客户端把附加世界书也塞在卡上
+      const extra = ch?.data?.extensions?.world_info || ch?.data?.extensions?.additional_worlds;
+      if (Array.isArray(extra)) extra.forEach(push);
+      else if (typeof extra === 'string') push(extra);
+    }
+  } catch {
+    /* noop */
+  }
+  return out;
+}
+
+/**
+ * 拿不到清单时的"验证式枚举"：对若干候选名字逐个试 `loadWorldInfo`，
+ * 能读出来的就是真实存在的世界书。
+ */
+async function probeWorldbookNames(candidates) {
+  const ctx = getCtx();
+  if (!ctx || typeof ctx.loadWorldInfo !== 'function') return [];
+  const ok = [];
+  for (const name of candidates) {
+    try {
+      const raw = await ctx.loadWorldInfo(name);
+      if (raw) ok.push({ name: String(name), fileId: String(name) });
+    } catch {
+      /* 读不出来就算了 */
+    }
+  }
+  return ok;
+}
+
+/**
+ * 诊断：把每一条获取途径都试一遍，报告各自的结果。
+ * 在客户端上拿不到控制台时，这是唯一能让用户把实情告诉我的办法。
+ */
+export async function diagnoseWorldbookSources() {
+  const ctx = getCtx();
+  const rows = [];
+  const record = (label, outcome) => rows.push({ label, outcome });
+
+  record('getContext() 是否可用', ctx ? '✅ 可用' : '❌ 拿不到 context');
+  record('loadWorldInfo() 是否存在', typeof ctx?.loadWorldInfo === 'function' ? '✅ 存在' : '❌ 不存在');
+  record('updateWorldInfoList() 是否存在', typeof ctx?.updateWorldInfoList === 'function' ? '✅ 存在' : '❌ 不存在');
+  record('getWorldInfoNames() 是否存在', typeof ctx?.getWorldInfoNames === 'function' ? '✅ 存在' : '❌ 不存在（多数版本没有）');
+
+  // updateWorldInfoList 跑一次，看有没有副作用
+  try {
+    if (ctx && typeof ctx.updateWorldInfoList === 'function') {
+      await ctx.updateWorldInfoList();
+      record('调用 updateWorldInfoList()', '✅ 调用成功（无返回值的可能性很大）');
+    }
+  } catch (e) {
+    record('调用 updateWorldInfoList()', `❌ 抛错：${e?.message || e}`);
+  }
+
+  // 官方函数
+  try {
+    if (ctx && typeof ctx.getWorldInfoNames === 'function') {
+      const names = ctx.getWorldInfoNames();
+      record('getWorldInfoNames() 返回', Array.isArray(names) ? `${names.length} 本：${names.slice(0, 5).join('、')}` : `非数组：${typeof names}`);
+    }
+  } catch (e) {
+    record('getWorldInfoNames() 抛错', String(e?.message || e));
+  }
+
+  // 动态 import
+  for (const path of ['/scripts/world-info.js', './world-info.js', '../../world-info.js']) {
+    try {
+      const mod = await import(/* @vite-ignore */ path);
+      const names = mod?.world_names;
+      record(`import ${path}`, Array.isArray(names) ? `✅ 拿到 ${names.length} 本` : '⚠️ 能导入但没有 world_names');
+      break;
+    } catch (e) {
+      record(`import ${path}`, `❌ ${String(e?.message || e).slice(0, 60)}`);
+    }
+  }
+
+  // ctx 上的数组字段
+  const fields = ['worldInfoList', 'world_info_list', 'world_names', 'worldNames'];
+  const found = fields.filter((f) => Array.isArray(ctx?.[f]) && ctx[f].length);
+  record('ctx 上的数组字段', found.length ? `✅ 有：${found.join(', ')}` : `❌ 都没有（试过 ${fields.join(', ')}）`);
+
+  // HTTP 接口
+  try {
+    const res = await fetch('/api/worldinfo/list', { method: 'POST', headers: requestHeaders() });
+    if (!res.ok) {
+      record('POST /api/worldinfo/list', `❌ HTTP ${res.status}`);
+    } else {
+      const data = await res.json();
+      record('POST /api/worldinfo/list', Array.isArray(data) ? `✅ 返回 ${data.length} 本` : `⚠️ 返回的不是数组：${typeof data}`);
+    }
+  } catch (e) {
+    record('POST /api/worldinfo/list', `❌ 请求失败：${String(e?.message || e).slice(0, 60)}`);
+  }
+
+  // 从角色卡收集
+  const fromCards = collectWorldbooksFromCharacters();
+  record('从角色卡绑定收集', fromCards.length ? `✅ 收集到 ${fromCards.length} 本` : '❌ 一本都没收集到');
+
+  // 验证式枚举
+  if (fromCards.length) {
+    const probed = await probeWorldbookNames(fromCards.map((b) => b.name));
+    record('逐个试读这些名字', `✅ ${probed.length}/${fromCards.length} 本可读`);
+  }
+
+  record('最终清单', bookCache.length ? `${bookCache.length} 本` : '0 本（列表会是空的）');
+  return rows;
+}
+
+/**
  * 刷新世界书清单。进卡、打开面板、扫描前都可以调。
  * @param {boolean} [force] 忽略缓存强制刷新
  * @returns {Promise<object[]>} 最新的 [{name, fileId}]
@@ -281,8 +414,21 @@ export async function refreshWorldbookNames(force = false) {
     }
   }
 
-  // ③ 上下文里已有的数组（旧版本兼容）
-  if (!entries) {
+  // ③ 服务端列目录（ST 上是标准路由；某些客户端可能没有）
+  if (!entries) entries = await fetchWorldbookListViaApi();
+
+  // ④ 从角色卡绑定收集（不依赖任何接口，客户端上实测最稳）
+  if (!entries || !entries.length) {
+    const fromCards = collectWorldbooksFromCharacters();
+    if (fromCards.length) {
+      // 收集到的名字再用 loadWorldInfo 验一遍，确保是真能读的书
+      const probed = await probeWorldbookNames(fromCards.map((b) => b.name));
+      entries = probed.length ? probed : fromCards;
+    }
+  }
+
+  // ⑤ ctx 上旧版本的数组字段
+  if (!entries || !entries.length) {
     try {
       const list = ctx?.worldInfoList || ctx?.world_info_list || ctx?.world_names || ctx?.worldNames || [];
       if (Array.isArray(list) && list.length) {
@@ -295,14 +441,15 @@ export async function refreshWorldbookNames(force = false) {
     }
   }
 
-  // ④ 服务端列目录（最可靠，放最后是因为要发一次请求）
-  if (!entries) entries = await fetchWorldbookListViaApi();
-
-  if (entries) {
-    // 两个来源都没有 → 保留旧缓存，不要因为一次失败就把列表清空
+  if (entries && entries.length) {
     bookCache = entries;
     bookCacheAt = Date.now();
+  } else if (entries) {
+    // 真的确认是空（比如确实一本都没有）才清空
+    bookCache = [];
+    bookCacheAt = Date.now();
   }
+  // entries 为 null（全部途径都失败）时保留旧缓存，不清空
   return listWorldbookEntries();
 }
 

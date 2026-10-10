@@ -931,6 +931,9 @@ textarea.std-input {
   margin: 4px 0 2px;
   opacity: 0.95;
   word-break: break-word;
+  /* 诊断结果是多行文本，必须保留换行 */
+  white-space: pre-wrap;
+  line-height: 1.6;
 }
 
 /* 世界书模块（就在扩展栏里，勾哪本扫描就读哪本） */

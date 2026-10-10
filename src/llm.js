@@ -431,16 +431,55 @@ async function chatDirect({ system, user, api, jsonSchema, label, timeoutMs }) {
   return { ok: true, text, error: '', route: 'direct' };
 }
 
-/** 发一次请求并要求 JSON 结果 */
+/**
+ * 发一次请求并要求 JSON 结果。
+ *
+ * 结构化输出（json_schema / response_format）不是所有端点都支持 ——
+ * 第三方 OpenAI 兼容端点尤其常见：带了就直接 400「Invalid data: Request contains
+ * an invalid argument」，而且不给任何降级机会。实测踩到过，所以这里做**自动降级**：
+ * 一旦判定失败与结构化输出有关，就去掉它重试一次，改用纯文本 + 宽松解析。
+ */
 export async function chatJson(req) {
-  const useSchema = req?.api?.useJsonSchema !== false && !!req?.jsonSchema;
-  const res = await chat({ ...req, jsonSchema: useSchema ? req.jsonSchema : undefined });
-  if (!res.ok) return { ...res, value: null };
-  const parsed = parseJsonLoose(res.text);
-  if (!parsed.ok) {
-    return { ...res, value: null, error: `${req?.label || '请求'}：${parsed.error}｜原文开头：${truncate(parsed.raw, 200)}` };
+  const wantSchema = req?.api?.useJsonSchema !== false && !!req?.jsonSchema;
+
+  const attempt = async (withSchema) => {
+    const res = await chat({ ...req, jsonSchema: withSchema ? req.jsonSchema : undefined });
+    if (!res.ok) return { ...res, value: null };
+    const parsed = parseJsonLoose(res.text);
+    if (!parsed.ok) {
+      return { ...res, value: null, error: `${req?.label || '请求'}：${parsed.error}｜原文开头：${truncate(parsed.raw, 200)}` };
+    }
+    return { ...res, value: parsed.value, error: '' };
+  };
+
+  let out = await attempt(wantSchema);
+
+  if (!out.ok && wantSchema && isSchemaRejection(out.error)) {
+    const retry = await attempt(false);
+    if (retry.ok) {
+      return {
+        ...retry,
+        schemaFallback: true,
+        note: '这个端点不支持结构化输出，已自动改用纯文本模式重试并成功。若经常这样，可在「连接」页关掉「结构化输出」。',
+      };
+    }
+    return {
+      ...retry,
+      error: `${out.error}\n（已尝试去掉结构化输出重试，仍然失败：${retry.error}）`,
+    };
   }
-  return { ...res, value: parsed.value, error: '' };
+
+  return out;
+}
+
+/** 判断失败是不是"端点不支持结构化输出"造成的 */
+export function isSchemaRejection(error) {
+  const t = String(error || '').toLowerCase();
+  return (
+    /invalid data|invalid argument|request contains an invalid/.test(t) ||
+    /response_format|json_schema|json schema|structured/.test(t) ||
+    /unsupported|not support/.test(t)
+  );
 }
 
 /** 拉模型列表（走酒馆后端） */
