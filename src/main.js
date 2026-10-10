@@ -369,6 +369,11 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
 
       api.emit('batch', batch);
       return { ok: true, batch };
+    } catch (e) {
+      const msg = `出弹幕时出错：${e?.message || e}`;
+      state.lastError = msg;
+      api.emit('error', msg);
+      return { ok: false, error: msg };
     } finally {
       state.busy = false;
       api.emit('busy', false);
@@ -562,7 +567,7 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
         scan: state.settings.scan,
         recentText: story,
         log: (m, lv) => logLine(m, lv),
-        // 三个阶段原样透出去，面板/设置栏照着显示进度
+        // 各阶段原样透出去，面板/设置栏照着显示进度
         progress: (p) => api.emit('scan', p),
       });
       if (!res.ok) {
@@ -581,6 +586,14 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       persistRuntime();
       api.emit('profile', res.profile);
       return { ok: true, profile: res.profile, note: res.note || '' };
+    } catch (e) {
+      // 关键：内部异常绝不能漏给 UI。
+      // 之前这里只有 finally 没有 catch，任何一步抛异常都会变成未捕获的 Promise 拒绝，
+      // 表现就是"点了扫描什么都没发生、按钮还一直灰着"。
+      const msg = `扫描过程出错：${e?.message || e}`;
+      state.lastError = msg;
+      api.emit('error', msg);
+      return { ok: false, error: msg };
     } finally {
       state.busy = false;
       api.emit('busy', false);
@@ -694,6 +707,11 @@ export function createApp({ storage = globalThis.localStorage, doc = globalThis.
       persistRuntime();
       api.emit('viewers', res.viewers);
       return { ok: true, viewers: res.viewers };
+    } catch (e) {
+      const msg = `生成观众名册时出错：${e?.message || e}`;
+      state.lastError = msg;
+      api.emit('error', msg);
+      return { ok: false, error: msg };
     } finally {
       state.busy = false;
       api.emit('busy', false);

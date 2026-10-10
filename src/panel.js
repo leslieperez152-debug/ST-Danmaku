@@ -11,6 +11,13 @@
 const BALL_ID = 'std-ball';
 const PANEL_ID = 'std-panel';
 
+/* 语料的产出方式（与 scan.js 里的 STYLE_MODES 保持一致） */
+const STYLE_MODES = [
+  ['auto', '自动（书上已有像弹幕的就用原文，没有就照着写）'],
+  ['generate', '全部由 AI 生成（照这本世界书重新写一批弹幕语料）'],
+  ['extract', '只用原文（书里已经有现成弹幕台词时用这个）'],
+];
+
 /* 字段声明：一页一组，渲染和读值都靠它 */
 function pages(app) {
   return [
@@ -212,7 +219,7 @@ function pages(app) {
           ),
           sep(),
           '<div class="std-sec">语风世界书（让弹幕真的像弹幕）</div>',
-          '<div class="std-hint">单独指定一本专门放<b>弹幕风格 / 口癖 / 梗 / 台词样本</b>的世界书。它和上面那些"世界事实"是两件事：<br>世界书回答"这个世界是什么样"，这本回答"这个世界的观众具体怎么说话"。读到的原文会被抽成范本，直接当作例句喂给生成弹幕那一步。</div>',
+          '<div class="std-hint">丢一本世界书进来，让 AI 把它总结成<b>这个直播间观众会说的弹幕语料</b>。<br>它和上面那些"世界事实"是两件事：世界书回答"这个世界是什么样"，这本回答"这个世界的观众具体怎么说话"。<br><b>称呼、行话、梗都会被要求落在句子里</b>（例如直接写"凤皇这波我没想到"而不是"观众称首领为凤皇"），所以语料本身就带着这个直播间的腔调，之后当作例句喂给生成弹幕那一步。</div>',
           row2(
             '语风世界书',
             (() => {
@@ -223,17 +230,24 @@ function pages(app) {
               if (cur && !books.includes(cur)) opts.push(`<option value="${esc(cur)}" selected>${esc(cur)}（当前值，不在列表里）</option>`);
               return `<select class="std-input" data-std-path="scan.styleBook" data-std-type="string">${opts.join('')}</select>`;
             })(),
-            '选一本专放语料的世界书；不选就没有范本，弹幕会更容易写得像对话',
+            '选一本用来产语料的世界书（设定资料也行，AI 会照着它写弹幕）',
+          ),
+          row2(
+            '产出方式',
+            select('scan.styleMode', s.scan.styleMode, STYLE_MODES, true),
+            '书里已经有现成弹幕台词就用「只用原文」；是设定资料就用「全部由 AI 生成」',
           ),
           row2('语风读取上限（字）', number('scan.styleBookBudget', s.scan.styleBookBudget, 1000, 200000, 1000), '单独预算，不占上面世界书的额度'),
-          row2('抽出多少条范本', number('scan.styleSampleCount', s.scan.styleSampleCount, 4, 80, 1), '范本会直接进提示词，太多会挤占篇幅'),
+          row2('产出多少条语料', number('scan.styleSampleCount', s.scan.styleSampleCount, 4, 80, 1), '语料会直接进提示词，太多会挤占篇幅'),
           (() => {
             const prof = st.profile;
             if (!prof?.styleBookName) return '';
             const n = (prof.styleSamples || []).length;
-            return `<div class="std-hint">上次扫描：语风世界书《${esc(prof.styleBookName)}》→ 抽出 ${n} 条范本${
-              n ? `，例如：${prof.styleSamples.slice(0, 3).map((x) => esc(x)).join(' / ')}` : ''
-            }</div>`;
+            const gen = prof.stats?.styleGenerated || 0;
+            const list = (prof.styleSamples || []).slice(0, 8).map((x) => esc(x));
+            return `<div class="std-hint">上次扫描：语风世界书《${esc(prof.styleBookName)}》→ 产出 ${n} 条语料${
+              n ? `（AI 新写 ${gen} 条，取自原文 ${n - gen} 条）` : ''
+            }${list.length ? `<br>例如：${list.join(' / ')}` : ''}</div>`;
           })(),
           sep(),
           '<div class="std-sec">预算</div>',
@@ -745,7 +759,13 @@ export function createPanel(app, { doc = globalThis.document } = {}) {
       case 'scan': {
         btn.disabled = true;
         setResult('std-scan-log', '⏳ 正在扫描…');
-        const res = await app.scan();
+        // 兜底：无论下面发生什么，按钮都不能一直灰着（否则看起来就是"点了没反应"）
+        let res;
+        try {
+          res = await app.scan();
+        } catch (e) {
+          res = { ok: false, error: `扫描异常：${e?.message || e}` };
+        }
         let msg = res.ok ? `✅ 档案完成：${res.profile.stats.summaryChars} 字` : `❌ ${res.error}`;
         if (res.ok && res.note) msg += `\nℹ️ ${res.note}`;
         setResult('std-scan-log', msg);

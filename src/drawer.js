@@ -252,7 +252,13 @@ export function createDrawer(app, { doc = globalThis.document } = {}) {
 
     if (act === 'scan') {
       setResult('⏳ 正在扫描世界书…');
-      const res = await app.scan();
+      // 兜底：无论发生什么都要给出反馈，按钮不能一直灰着
+      let res;
+      try {
+        res = await app.scan();
+      } catch (e) {
+        res = { ok: false, error: `扫描异常：${e?.message || e}` };
+      }
       let msg = res.ok
         ? `✅ 档案完成：读 ${res.profile.stats.entriesRead} 条 / ${res.profile.stats.charsRead} 字 → 总结 ${res.profile.stats.summaryChars} 字`
         : `❌ ${res.error}`;

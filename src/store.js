@@ -57,8 +57,9 @@ export function defaultSettings() {
        * 当作 few-shot 直接喂给生成弹幕那一步，弹幕才会像弹幕而不是像对话。
        */
       styleBook: '',
+      styleMode: 'auto', // auto | generate | extract —— 语料是"照书写"还是"只用原文"
       styleBookBudget: 12000, // 语风世界书的读取预算（单独算，不占上面那个预算）
-      styleSampleCount: 24, // 抽出多少条语料样本
+      styleSampleCount: 24, // 产出多少条语料样本
     },
 
     /* 观众 */
@@ -216,6 +217,7 @@ export function normalizeSettings(s) {
   out.scan.includeDisabled = asBool(out.scan.includeDisabled, false);
   out.scan.followCard = asBool(out.scan.followCard, true);
   out.scan.styleBook = String(out.scan.styleBook || '');
+  if (!['auto', 'generate', 'extract'].includes(out.scan.styleMode)) out.scan.styleMode = 'auto';
   out.scan.styleBookBudget = num(out.scan.styleBookBudget, 12000, 1000, 200000);
   out.scan.styleSampleCount = num(out.scan.styleSampleCount, 24, 4, 80);
   if (!Array.isArray(out.scan.sources)) out.scan.sources = null;
@@ -319,8 +321,9 @@ export function blankProfileData() {
 
     hasWorldbook: false, // 有没有可用的世界书材料（影响的是"事实层"）
     voiceNote: '', // 腔调层是怎么来的（自己推的 / 书上抄的）
-    /** 语风语料样本：来自"语风世界书"的真实台词，当 few-shot 用 */
+    /** 语风语料：由"语风世界书"产出的弹幕短句，当 few-shot 用 */
     styleSamples: [],
+    styleDetail: [], // [{内容, 来源: 原文|新写, 说明}]
     styleBookName: '', // 语料来自哪本
   };
 }
@@ -345,6 +348,9 @@ export function getCachedProfile(storage, key) {
   const data = { ...blankProfileData(), ...hit.data };
   // 数组字段不走字符串归一，这里单独兜一下
   if (!Array.isArray(data.styleSamples)) data.styleSamples = [];
+  if (!Array.isArray(data.styleDetail)) {
+    data.styleDetail = data.styleSamples.map((s) => ({ 内容: s, 来源: '原文', 说明: '' }));
+  }
   return { ...emptyProfile(), ...hit, data };
 }
 

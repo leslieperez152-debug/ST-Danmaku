@@ -239,7 +239,8 @@ export function profileJsonSchema() {
 
 /**
  * 把语风世界书的正文拆成候选行。
- * 语风书通常是人工整理的"弹幕/台词/口癖"清单，一行一条，或带序号、引号、markdown 标记。
+ * 语风书可能是人工整理的"弹幕/台词/口癖"清单（一行一条，带序号、引号、markdown 标记），
+ * 也可能就是一份普通设定资料 —— 后者会被当成"素材"交给 AI 去改写成弹幕语料。
  */
 export function candidateStyleLines(text) {
   const out = [];
@@ -263,59 +264,112 @@ export function candidateStyleLines(text) {
   return out;
 }
 
-export function stylePickPrompt() {
+/* 语料的产出方式 */
+export const STYLE_MODES = [
+  ['auto', '自动（书上已有像弹幕的就用原文，没有就照着写）'],
+  ['generate', '全部由 AI 生成（照这本世界书重新写一批弹幕语料）'],
+  ['extract', '只用原文（书里已经有现成弹幕台词时用这个）'],
+];
+
+export function styleBookPrompt() {
   return [
-    '你要从一份"语风素材"里挑出最能代表**这个直播间观众说话方式**的句子，当作之后生成弹幕的范本。',
+    '你的任务：看一份"世界观素材"，然后产出**这个世界的直播间里，观众会说的弹幕语料**。',
     '',
-    '挑选标准（按重要性排序）：',
-    '1. 必须像**直播弹幕**：短、口语、带情绪、常常不完整；不是旁白、不是正经文、不是设定说明。',
-    '2. 覆盖不同的说话姿态：起哄、抬杠、催更、玩梗、@人、纯情绪、懂行解说、突然的关心……',
-    '3. 保留原文的用词与口癖，**一个字都不要改写**（这是范本，改了就没味道了）。',
-    '4. 长度尽量 4~40 字；明显是整段叙述的句子不要。',
-    '5. 如果素材里重复出现同一句话，只留一条。',
+    '【最终产物是什么】',
+    '一批**可以直接当成弹幕范本的短句**。之后会拿它们当例句，去生成更多的弹幕。',
+    '所以每一条都必须读起来就是一条弹幕 —— 短、口语、带情绪、常常不完整。',
     '',
-    '只输出 JSON：{"样本":["原文1","原文2", ...]}',
+    '【最关键：称呼必须落在语料里】',
+    '观众怎么称呼台上的人（头衔、绰号、门派、职称、代号），不要写成"他们会称呼为某某"',
+    '这种说明句，而要**直接把它用在句子里**。例如：',
+    '  ✗ 错误写法：「观众称首领为凤皇」（这是说明，不是弹幕）',
+    '  ✓ 正确写法：「凤皇这波操作我是没想到的」「媚姐别上头啊」',
+    '同样，素材里的行话、术语、地名、招式名、梗，都要**用进句子里**，不要罗列成清单。',
+    '',
+    '【可以生成，不要只做摘抄】',
+    '素材里如果本来就有像弹幕的句子，可以原样采用；但**不要只做摘抄** ——',
+    '如果素材是设定资料、人物介绍、剧情描述，那你必须**照着它的用词和逻辑，自己写出弹幕**。',
+    '一条合格的语料应当能让读者看出"这是哪个世界的观众在说话"，而不需要任何解释。',
+    '',
+    '【覆盖不同的说话姿态】',
+    '起哄、抬杠、催更、玩梗、@人、纯情绪（"？？？""6"）、懂行解说、站队拉踩、',
+    '突然的关心、看热闹不嫌事大……尽量让这批语料在不同姿态上都有样本。',
+    '',
+    '【硬性要求】',
+    '1. 每条 4~40 字，必须是完整的口语短句，不要写成段落。',
+    '2. **绝对不要**出现：旁白、舞台指示、设定说明、"xx是xx"式的介绍句、书面语连接词。',
+    '3. 不要给观众设"不该说的话"这类约束 —— 观众该骂就骂、该起哄就起哄。',
+    '4. 不要重复同一句；用词要贴着这个世界的语言习惯。',
+    '5. 可以少量保留素材里的原句（如果它本来就是弹幕），但要标注来源。',
+    '',
+    '只输出 JSON：{"语料":[{"内容":"","来源":"原文|新写","说明":""}]}',
+    '其中"来源"填 原文 或 新写；"说明"一句话讲这条用到了素材里的什么（可留空）。',
   ].join('\n');
 }
 
-export function stylePickUserPrompt(lines, want) {
-  return [
-    `下面是从语风素材里拆出来的 ${lines.length} 行候选。请挑出最多 ${want} 条作为范本。`,
-    '如果其中有很多并不像弹幕（比如设定描述、场景叙述），就少挑一些，只挑真正像弹幕的。',
-    '',
-    '【候选】',
-    lines.join('\n'),
-    '',
-    `输出 JSON：{"样本":[...]}，最多 ${want} 条，必须是上面出现过的原句。`,
-  ].join('\n');
+export function styleBookUserPrompt({ lines, bookName, want, mode }) {
+  const parts = [];
+  const modeHint =
+    mode === 'extract'
+      ? '本次要求：**只从素材里挑现成的句子**，尽量少改动，挑不出够多就少给几条。'
+      : mode === 'generate'
+        ? '本次要求：**主要靠你自己写**，素材只提供用词、称呼、行话与氛围；不要大量照抄原句。'
+        : '本次要求：素材里有像弹幕的就采用原文，其余照着素材的用词与逻辑自己写。';
+  parts.push(`【素材来源】《${bookName}》`);
+  parts.push(`【本次要求】${modeHint}`);
+  parts.push('');
+  parts.push('【素材（可能是设定资料、人物介绍、剧情，也可能已经是弹幕清单）】');
+  parts.push(lines.slice(0, 500).map((l) => `· ${l}`).join('\n'));
+  parts.push('');
+  parts.push(`请产出最多 ${want} 条弹幕语料，并带上"来源"（原文 / 新写）。`);
+  return parts.join('\n');
 }
 
-export function stylePickJsonSchema(want) {
+export function styleBookJsonSchema(want) {
   return {
-    name: 'danmaku_style_samples',
-    description: '从语风素材里挑出的弹幕范本',
+    name: 'danmaku_style_corpus',
+    description: '直播间弹幕语料',
     strict: true,
     value: {
       type: 'object',
       properties: {
-        样本: { type: 'array', items: { type: 'string' }, maxItems: Math.max(1, want) },
+        语料: {
+          type: 'array',
+          maxItems: Math.max(1, want),
+          items: {
+            type: 'object',
+            properties: {
+              内容: { type: 'string' },
+              来源: { type: 'string' },
+              说明: { type: 'string' },
+            },
+            required: ['内容', '来源', '说明'],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ['样本'],
+      required: ['语料'],
       additionalProperties: false,
     },
   };
 }
 
 /**
- * 读"语风世界书"并抽出语料样本。
- * @returns {Promise<{ok:boolean, samples:string[], bookName:string, chars:number, error:string}>}
+ * 读"语风世界书"，产出弹幕语料样本。
+ *
+ * 两种来源都支持：
+ *   · 书里本来就有弹幕台词 → 直接用原文（一字不改）
+ *   · 书是设定资料 / 人物介绍 → 照着它的用词与逻辑，让 AI 写出这个世界的弹幕
+ * 称呼、行话、梗都要求**落在句子里**，所以语料本身就带着这个直播间的腔调。
+ *
+ * @returns {Promise<{ok:boolean, samples:string[], detail:object[], bookName:string, chars:number, generated:number, error:string}>}
  */
 export async function extractStyleSamples(input) {
   const { api, scan } = input || {};
   const log = typeof input?.log === 'function' ? input.log : () => {};
   const progress = typeof input?.progress === 'function' ? input.progress : () => {};
   const bookName = String(scan?.styleBook || '').trim();
-  const result = { ok: false, samples: [], bookName, chars: 0, error: '' };
+  const result = { ok: false, samples: [], detail: [], bookName, chars: 0, generated: 0, error: '' };
   if (!bookName) return result;
 
   progress({ phase: 'style', detail: `正在读语风世界书《${bookName}》…` });
@@ -337,44 +391,67 @@ export async function extractStyleSamples(input) {
   text = text.slice(0, budget);
   result.chars = text.length;
 
+  // 候选行放宽长度限制：设定资料里的句子会长一些，它们是"素材"而不是最终语料
   const lines = candidateStyleLines(text);
-  if (!lines.length) {
-    result.error = `语风世界书《${bookName}》里没找到可用的短句`;
+  const longLines = String(text)
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 60);
+  const material = [...lines, ...longLines.slice(0, 80)];
+  if (!material.length) {
+    result.error = `语风世界书《${bookName}》里没找到可用素材`;
     log(result.error, 'warn');
     return result;
   }
 
   const want = Math.max(4, Number(scan?.styleSampleCount) || 24);
-  // 候选不多时干脆直接用，省一次调用
-  if (lines.length <= want) {
-    result.ok = true;
-    result.samples = lines;
-    log(`语风语料：候选 ${lines.length} 条，全部采用`, 'info');
-    return result;
-  }
+  const mode = String(scan?.styleMode || 'auto');
+  progress({ phase: 'style', detail: `正在从《${bookName}》产出弹幕语料…` });
 
-  progress({ phase: 'style', detail: `正在从 ${lines.length} 行候选中挑范本…` });
   const picked = await chatJson({
     api,
-    label: '语风语料挑选',
-    system: stylePickPrompt(),
-    user: stylePickUserPrompt(lines.slice(0, 400), want),
-    jsonSchema: stylePickJsonSchema(want),
+    label: '语风语料',
+    system: styleBookPrompt(),
+    user: styleBookUserPrompt({ lines: material, bookName, want, mode }),
+    jsonSchema: styleBookJsonSchema(want),
   });
-  if (picked.ok && picked.value && Array.isArray(picked.value.样本)) {
-    const list = picked.value.样本.map((s) => String(s).trim()).filter((s) => s && lines.includes(s));
-    if (list.length) {
+
+  if (picked.ok && picked.value && Array.isArray(picked.value.语料)) {
+    const detail = picked.value.语料
+      .map((it) => ({
+        内容: String(it?.内容 || '').trim(),
+        来源: String(it?.来源 || '').trim() === '原文' ? '原文' : '新写',
+        说明: String(it?.说明 || '').trim(),
+      }))
+      .filter((it) => it.内容.length >= 2 && it.内容.length <= 60);
+    const uniq = [];
+    const seen = new Set();
+    for (const it of detail) {
+      if (seen.has(it.内容)) continue;
+      seen.add(it.内容);
+      uniq.push(it);
+    }
+    if (uniq.length) {
       result.ok = true;
-      result.samples = [...new Set(list)].slice(0, want);
-      log(`语风语料：《${bookName}》抽出 ${result.samples.length} 条范本`, 'info');
+      result.detail = uniq.slice(0, want);
+      result.samples = result.detail.map((it) => it.内容);
+      result.generated = result.detail.filter((it) => it.来源 === '新写').length;
+      log(
+        `语风语料：《${bookName}》产出 ${result.samples.length} 条（其中新写 ${result.generated} 条、取自原文 ${
+          result.samples.length - result.generated
+        } 条）`,
+        'info',
+      );
       return result;
     }
   }
-  // 挑不出来就退化成"取前 N 条"，不能让这一步把整个扫描拖垮
+
+  // 产不出来就退化成"直接用候选行"，至少不空手
   result.ok = true;
   result.samples = lines.slice(0, want);
+  result.detail = result.samples.map((s) => ({ 内容: s, 来源: '原文', 说明: '' }));
   result.error = '';
-  log(`语风语料：自动挑选没成功，改用前 ${result.samples.length} 条候选（不影响使用）`, 'warn');
+  log(`语风语料：AI 产出没成功，改用素材里的 ${result.samples.length} 条原句（不影响使用）`, 'warn');
   return result;
 }
 
@@ -527,16 +604,19 @@ export async function scanWorldbooks(input) {
   profile.data = data;
   profile.books = bookStats;
 
-  /* ④ 语风语料：单独读一本，抽出真实台词当范本 */
+  /* ④ 语风语料：单独读一本，产出这个直播间的弹幕语料 */
   if (String(scan?.styleBook || '').trim()) {
     const style = await extractStyleSamples({ api, scan, log, progress });
     profile.styleSamples = style.samples;
+    profile.styleDetail = style.detail || [];
     profile.styleBookName = style.bookName;
     profile.stats.styleSamples = style.samples.length;
+    profile.stats.styleGenerated = style.generated || 0;
     profile.stats.styleChars = style.chars;
     if (!style.ok && style.error) log(style.error, 'warn');
   } else {
     profile.styleSamples = [];
+    profile.styleDetail = [];
     profile.styleBookName = '';
   }
 

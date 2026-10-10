@@ -2345,23 +2345,36 @@ await test('语风语料：从素材里拆候选行并清洗标记', () => {
   eq(lines.filter((l) => l === '来了来了').length, 1, '重复的应当去重');
 });
 
-await test('语风语料的提示词要求"一个字都不许改"', () => {
-  const sys = scan.stylePickPrompt();
-  ok(/一个字都不要改写|一个字都不许改|不要改写/.test(sys), '必须要求保留原文');
-  ok(/直播弹幕/.test(sys), '要说明挑选标准是像直播弹幕');
-  const user = scan.stylePickUserPrompt(['甲', '乙'], 2);
-  ok(/必须是上面出现过的原句/.test(user), '要约束只能用候选里的原句');
+await test('语料提示词：要求称呼落在句子里、且允许 AI 生成', () => {
+  const sys = scan.styleBookPrompt();
+  ok(/称呼必须落在语料里/.test(sys), '必须强调称呼要落进句子');
+  ok(/错误写法/.test(sys) && /正确写法/.test(sys), '应当给出正反例说明"说明句 vs 弹幕"');
+  ok(/不要只做摘抄|自己写/.test(sys), '应当明确允许并要求 AI 生成，而不是只摘抄');
+  ok(/像一条弹幕|读起来就是一条弹幕|像弹幕/.test(sys), '要说明产物必须像弹幕');
+  ok(/来源/.test(sys), '应当要求标注来源（原文/新写）');
+
+  // 三种产出方式都要能正确表达
+  const auto = scan.styleBookUserPrompt({ lines: ['甲'], bookName: '书', want: 5, mode: 'auto' });
+  const gen = scan.styleBookUserPrompt({ lines: ['甲'], bookName: '书', want: 5, mode: 'generate' });
+  const ext = scan.styleBookUserPrompt({ lines: ['甲'], bookName: '书', want: 5, mode: 'extract' });
+  ok(/像弹幕的就采用原文/.test(auto), 'auto 模式要说清取舍规则');
+  ok(/主要靠你自己写/.test(gen), 'generate 模式要强调自己写');
+  ok(/只从素材里挑现成的句子/.test(ext), 'extract 模式要强调只用原文');
+
+  // 模式选项本身
+  eq(scan.STYLE_MODES.length, 3);
+  eq(scan.STYLE_MODES.map(([v]) => v).join(','), 'auto,generate,extract');
 });
 
-await test('语风范本会作为 few-shot 进弹幕提示词', () => {
+await test('语风范本会作为 few-shot 进弹幕提示词（语料就是腔调本身）', () => {
   const profile = store.emptyProfile();
   profile.data = { ...profile.data, channelName: '围观席', manner: '短句爱起哄' };
-  profile.styleSamples = ['来了来了', '就这？'];
+  profile.styleSamples = ['凤皇这波我没想到', '媚姐别上头啊'];
   profile.styleBookName = '语风素材';
 
   const prompt = danmaku.batchUserPrompt({ profile, story: '', viewers: [], count: 15, fourthWall: 0 });
   ok(/语风范本/.test(prompt), '应当有语风范本段');
-  ok(prompt.includes('来了来了') && prompt.includes('就这？'), '范本原句应当出现在提示词里');
+  ok(prompt.includes('凤皇这波我没想到'), '语料原句应当出现在提示词里');
   ok(/不要原样照抄重复/.test(prompt), '要提醒可以借鉴但别照抄');
   ok(prompt.indexOf('语风范本') < prompt.indexOf('【破次元度】'), '范本段应当排在破次元度之前');
 });
@@ -2371,6 +2384,109 @@ await test('没有语风范本时，提示词里不会出现空的范本段', ()
   profile.data = { ...profile.data, manner: '短句' };
   const prompt = danmaku.batchUserPrompt({ profile, story: '', viewers: [], count: 15, fourthWall: 0 });
   ok(!/语风范本/.test(prompt), '没范本就不该有这一段');
+});
+
+await test('语料抽取：能解析 AI 产出的语料（含来源标注）', async () => {
+  resetMockConnection();
+  // AI 返回：两条原文 + 两条新写
+  queueResponse({
+    choices: [
+      {
+        message: {
+          content: JSON.stringify({
+            语料: [
+              { 内容: '来了来了', 来源: '原文', 说明: '' },
+              { 内容: '凤皇这波我没想到', 来源: '新写', 说明: '用到称呼"凤皇"' },
+              { 内容: '媚姐别上头啊', 来源: '新写', 说明: '用到称呼"媚姐"' },
+              { 内容: '就这？', 来源: '原文', 说明: '' },
+              { 内容: '重复的', 来源: '新写', 说明: '' },
+              { 内容: '重复的', 来源: '新写', 说明: '' }, // 应当被去重
+            ],
+          }),
+        },
+      },
+    ],
+  });
+  const res = await scan.extractStyleSamples({
+    api: { route: 'st', sourceMode: 'auto', useJsonSchema: false },
+    scan: { styleBook: '小书', styleBookBudget: 12000, styleSampleCount: 24, styleMode: 'auto' },
+  });
+  ok(res.ok, res.error);
+  eq(res.samples.length, 5, `重复项应当被去掉，实际 ${JSON.stringify(res.samples)}`);
+  eq(res.generated, 3, '应当统计出 AI 新写的条数');
+  ok(res.detail.some((d) => d.来源 === '原文'), '应当保留来源标注');
+  ok(res.detail.some((d) => d.说明.includes('称呼')), '应当保留说明');
+  ok(res.samples.includes('凤皇这波我没想到'), '新写的语料应当保留');
+});
+
+await test('语料抽取：AI 失败时退化成用素材原句，不空手', async () => {
+  resetMockConnection();
+  queueResponse({ __http: 500, body: 'boom' });
+  const res = await scan.extractStyleSamples({
+    api: { route: 'st', sourceMode: 'auto', useJsonSchema: false },
+    scan: { styleBook: '小书', styleBookBudget: 12000, styleSampleCount: 24, styleMode: 'auto' },
+  });
+  ok(res.ok, '不应当整步失败');
+  ok(res.samples.length > 0, '应当退化成用素材里的原句');
+  eq(res.detail.every((d) => d.来源 === '原文'), true, '降级时来源都算原文');
+});
+
+await test('扫描过程中任何异常都要变成看得见的错误，绝不"点了没反应"', async () => {
+  const { d, app } = makeDrawerEnv();
+  // 必须指定一本书，否则"没有可读的世界书"会合法地提前返回成功，测不到异常路径
+  app.updateSettings({ scan: { sources: ['大书'] } });
+  const errors = [];
+  app.on('error', (m) => errors.push(m));
+
+  // 让扫描内部真的抛一个异常：把 loadWorldInfo 换成会抛的 getter
+  const savedDesc = Object.getOwnPropertyDescriptor(mockContext, 'loadWorldInfo');
+  Object.defineProperty(mockContext, 'loadWorldInfo', {
+    configurable: true,
+    get() {
+      throw new Error('模拟内部炸了');
+    },
+  });
+
+  let threw = false;
+  let res = null;
+  try {
+    res = await app.scan();
+  } catch {
+    threw = true;
+  }
+  ok(!threw, 'app.scan() 绝不能把异常抛给调用方（那会变成未捕获的 Promise 拒绝）');
+  ok(res && res.ok === false, `应当返回 ok:false，实际 ${JSON.stringify(res)?.slice(0, 120)}`);
+  ok(/扫描过程出错/.test(res.error), `错误信息应当可读：${res?.error}`);
+  ok(errors.length > 0, '应当发出 error 事件，让界面能显示出来');
+  eq(app.state.busy, false, '异常后 busy 必须复位，否则以后所有操作都被"有任务在进行中"挡住');
+
+  // 恢复
+  if (savedDesc) Object.defineProperty(mockContext, 'loadWorldInfo', savedDesc);
+  app.destroy();
+});
+
+await test('出弹幕时内部出错也不会抛给调用方', async () => {
+  const { d, app } = makeDrawerEnv();
+  app.updateSettings({ seedDemo: false, count: 3 });
+  const savedDesc = Object.getOwnPropertyDescriptor(mockContext, 'getRequestHeaders');
+  Object.defineProperty(mockContext, 'getRequestHeaders', {
+    configurable: true,
+    get() {
+      throw new Error('模拟内部炸了');
+    },
+  });
+  let threw = false;
+  let res = null;
+  try {
+    res = await app.runBatch({ messageId: 1 });
+  } catch {
+    threw = true;
+  }
+  ok(!threw, 'runBatch 也不该抛');
+  ok(res && res.ok === false, '应当返回 ok:false');
+  eq(app.state.busy, false, 'busy 必须复位');
+  if (savedDesc) Object.defineProperty(mockContext, 'getRequestHeaders', savedDesc);
+  app.destroy();
 });
 
 section('14. 事件调度（自动直出 / 每 N 轮 / 手动）');
